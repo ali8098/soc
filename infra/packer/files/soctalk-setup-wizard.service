@@ -1,15 +1,19 @@
 [Unit]
 Description=SocTalk first-boot setup wizard (collects config, exits)
-# Start on a normal boot via multi-user.target. This unit MUST NOT be
-# WantedBy=cloud-init.target: on an OVA deploy with no cloud-init datasource
-# (the normal ESXi/vSphere case) cloud-init disables itself, cloud-init.target
-# never activates, and a WantedBy=cloud-init.target unit would never start —
-# the wizard would never bind :8443. `After=cloud-init.target` is ordering
-# ONLY (it has no effect when the target isn't in the transaction, so it can't
-# reintroduce the historical WantedBy=multi-user + After=cloud-final cycle):
-# when cloud-init IS present it still lets a cloud-init-supplied values.yaml
-# land before our ConditionPathExists checks; when it's absent it's a no-op.
-After=cloud-init.target network-online.target
+# Start on a normal boot via multi-user.target so the wizard comes up whether
+# or not cloud-init runs. Two hard constraints shaped this:
+#  - MUST NOT be WantedBy=cloud-init.target: on an OVA deploy with no cloud-init
+#    datasource (the normal ESXi/vSphere case) cloud-init disables itself,
+#    cloud-init.target never activates, and the unit would never start.
+#  - MUST NOT order After=cloud-init.target while WantedBy=multi-user.target:
+#    when cloud-init IS present that forms multi-user → this unit → cloud-init
+#    → multi-user, an ordering cycle systemd breaks by silently DELETING our
+#    job (both this and firstboot get skipped). So we do NOT reference
+#    cloud-init.target at all. In the headless cloud-init path the wizard may
+#    start before a cloud-init-supplied values.yaml lands and simply idle on
+#    :8443 waiting for input that never comes; that is harmless because
+#    firstboot picks up values.yaml on its own (it polls, see firstboot.sh).
+After=network-online.target
 Wants=network-online.target
 # Skip entirely on any subsequent boot once a sentinel exists OR
 # values.yaml is already present.

@@ -78,10 +78,26 @@ qemu MAC, so even the pinned netplan would match there.
   enp1s0) comes up without cloud-init.
 - `soctalk-setup-wizard.service` and `soctalk-firstboot.service`: change
   `WantedBy=cloud-init.target` to `WantedBy=multi-user.target`, so they start on
-  a normal boot whether or not cloud-init runs. `After=cloud-init.target` is
-  kept as ordering only (a no-op when cloud-init is not in the transaction, so
-  it cannot reintroduce the old ordering cycle), which preserves the
-  cloud-init-first, wizard-first ordering when a datasource IS present.
+  a normal boot whether or not cloud-init runs, AND remove `After=cloud-init.target`
+  entirely. Keeping that `After=` was the first attempt and it was WRONG: with
+  `WantedBy=multi-user.target` it forms multi-user -> unit -> cloud-init.target
+  -> multi-user, an ordering cycle that systemd breaks by deleting the job, so
+  both units get skipped whenever cloud-init IS present (the seeded/cloud path).
+  Ordering after cloud-init is unnecessary anyway: firstboot.sh polls for
+  values.yaml + llm.key itself (from cloud-init OR the wizard) with the unit at
+  TimeoutStartSec=infinity, so start order does not matter.
+
+## First fix attempt and why it was caught
+
+The initial fix kept `After=cloud-init.target` (as "ordering only"). It passed
+the manual ESXi test (no cloud-init, so cloud-init.target is not in the
+transaction and there is no cycle) but FAILED the packer KVM boot-test, which
+seeds cloud-init: the serial log showed
+`Found ordering cycle on soctalk-setup-wizard.service` and
+`Job ... deleted to break ordering cycle`, so firstboot never ran. The seeded
+CI boot-test caught exactly the case the manual ESXi test could not, and the
+no-seed ESXi test caught the case CI could not. Both paths are needed; see the
+follow-up below.
 
 ## Follow-up worth doing
 
