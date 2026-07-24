@@ -7,6 +7,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { currentLocale } from '$lib/i18n';
 	import MsspAnalytics from '$lib/components/MsspAnalytics.svelte';
+	import FleetPanel from '$lib/pipeline-viz/FleetPanel.svelte';
 
 	let analytics: AnalyticsSummary | null = null;
 	let loading = true;
@@ -301,6 +302,9 @@
 		<span>{m.ana_error({ error })}</span>
 	</div>
 {:else if analytics}
+	<!-- Fleet flight recorder (#72): the day at scale, dots are real alerts -->
+	<FleetPanel />
+
 	<!-- Executive KPIs -->
 	<section class="mb-8">
 		<h2 class="h4 mb-4 opacity-60">{m.ana_executive_kpis()}</h2>
