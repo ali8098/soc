@@ -69,6 +69,253 @@ class FleetDayResponse(BaseModel):
     recent_vetoes: list[FleetVetoRow]
 
 
+class FleetArrival(BaseModel):
+    alert_id: str
+    investigation_id: str | None
+    first_event_at: str
+    status: str | None
+
+
+class FleetLiveResponse(BaseModel):
+    server_now: str
+    window_start: str
+    ingested: int
+    closed_ingest_memoized: int
+    closed_ingest_rules: int
+    closed_operational: int
+    closed_reasoning: int
+    escalated: int
+    guard_vetoes: int
+    in_flight: int
+    last_alert_at: str | None
+    # Stage → count of open investigations parked there, derived from each
+    # open investigation's LATEST replay beat. Investigations with no
+    # recorded beat land in "unknown" — never a fake parked node.
+    open_by_stage: dict[str, int]
+    # UNSAMPLED newest arrivals: the sampled dot set can miss or displace a
+    # just-arrived alert (md5 ordering), so live arrivals get their own feed.
+    recent_arrivals: list[FleetArrival]
+
+
+_WORKER_STAGE = {
+    "wazuh": "wazuh",
+    "cortex": "cortex",
+    "misp": "misp",
+    "authorization_context": "authz",
+    "thehive": "thehive",
+}
+
+
+def stage_for_latest_event(kind: str, payload: dict[str, Any] | None) -> str:
+    """Map an open investigation's latest replay beat to a map stage.
+
+    Pure and unit-tested. ``worker_result`` parks back at the supervisor
+    (the worker returned); unknown kinds are honestly ``unknown``.
+    """
+    p = payload or {}
+    if kind in ("alert_ingested", "policy_resolved"):
+        return "gate"
+    if kind == "supervisor_decision":
+        return "sup"
+    if kind == "worker_started":
+        return _WORKER_STAGE.get(str(p.get("worker") or ""), "sup")
+    if kind == "worker_result":
+        return "sup"
+    if kind == "verdict_rendered":
+        return "verdict"
+    if kind == "guard_evaluated":
+        return "guard"
+    if kind in ("human_review_requested", "human_decision"):
+        return "human"
+    if kind == "auto_closed":
+        return "close"
+    return "unknown"
+
+
+@router.get("/api/analytics/fleet-live", response_model=FleetLiveResponse)
+async def fleet_live(
+    request: Request,
+    tz: str = Query("UTC", max_length=64),
+    arrivals_window_s: int = Query(900, ge=60, le=3600),
+    arrivals_limit: int = Query(30, ge=1, le=100),
+) -> FleetLiveResponse:
+    """Lightweight live snapshot for the fleet panel (polled at 5-10s).
+
+    Exact today-so-far counters plus the quiet-state facts that make a
+    still map legible: last arrival, in-flight count, and open
+    investigations grouped by the stage their latest replay beat parks
+    them at. Heavier day context (dots, histogram) stays on fleet-day.
+    """
+    identity = current_identity(request)
+    if identity is None:
+        raise HTTPException(401, "authentication required")
+    if identity.tenant_id is None:
+        raise HTTPException(403, "tenant scope required")
+
+    try:
+        zone = ZoneInfo(tz)
+    except Exception:
+        raise HTTPException(400, f"unknown timezone: {tz}") from None
+
+    local_now = datetime.now(zone)
+    day = local_now.date()
+    start = datetime(day.year, day.month, day.day, tzinfo=zone)
+    end = start + timedelta(days=1)
+
+    sm = get_app_sessionmaker()
+    async with sm() as db, tenant_context(db, identity.tenant_id):
+        p: dict[str, Any] = {"s": start, "e": end}
+        server_now = (await db.execute(text("SELECT now()"))).scalar_one()
+
+        alerts_row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT COUNT(*)::int AS ingested, MAX(first_event_at) AS last_at
+                    FROM alerts
+                    WHERE first_event_at >= :s AND first_event_at < :e
+                    """
+                ),
+                p,
+            )
+        ).mappings().one()
+
+        close_rows = (
+            await db.execute(
+                text(
+                    """
+                    SELECT payload->>'path' AS path, COUNT(*)::int AS n
+                    FROM investigation_events
+                    WHERE kind = 'auto_closed'
+                      AND created_at >= :s AND created_at < :e
+                    GROUP BY path
+                    """
+                ),
+                p,
+            )
+        ).mappings().all()
+        closes = {r["path"]: int(r["n"]) for r in close_rows}
+
+        veto_row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT COUNT(*)::int AS n
+                    FROM investigation_events
+                    WHERE kind = 'guard_evaluated'
+                      AND payload->>'effect' = 'override'
+                      AND created_at >= :s AND created_at < :e
+                    """
+                ),
+                p,
+            )
+        ).mappings().one()
+
+        escalated_row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT COUNT(*)::int AS n
+                    FROM pending_reviews
+                    WHERE ai_decision = 'escalate'
+                      AND created_at >= :s AND created_at < :e
+                    """
+                ),
+                p,
+            )
+        ).mappings().one()
+
+        in_flight_row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT COUNT(*)::int AS n
+                    FROM investigations
+                    WHERE status = 'active'
+                      AND opened_at >= :s AND opened_at < :e
+                    """
+                ),
+                p,
+            )
+        ).mappings().one()
+        in_flight = int(in_flight_row["n"])
+
+        latest_rows = (
+            await db.execute(
+                text(
+                    """
+                    SELECT DISTINCT ON (ev.investigation_id)
+                           ev.investigation_id, ev.kind, ev.payload
+                    FROM investigation_events ev
+                    JOIN investigations i ON i.id = ev.investigation_id
+                    WHERE i.status = 'active'
+                      AND i.opened_at >= :s AND i.opened_at < :e
+                    ORDER BY ev.investigation_id, ev.seq DESC
+                    """
+                ),
+                p,
+            )
+        ).mappings().all()
+        open_by_stage: dict[str, int] = {}
+        for r in latest_rows:
+            stage = stage_for_latest_event(
+                str(r["kind"]), dict(r["payload"]) if r["payload"] else None
+            )
+            open_by_stage[stage] = open_by_stage.get(stage, 0) + 1
+        staged = sum(open_by_stage.values())
+        if in_flight > staged:
+            open_by_stage["unknown"] = open_by_stage.get("unknown", 0) + (
+                in_flight - staged
+            )
+
+        arrival_rows = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id, investigation_id, first_event_at, status
+                    FROM alerts
+                    WHERE first_event_at >= :recent AND first_event_at < :e
+                    ORDER BY first_event_at DESC
+                    LIMIT :lim
+                    """
+                ),
+                {
+                    **p,
+                    "recent": server_now - timedelta(seconds=arrivals_window_s),
+                    "lim": arrivals_limit,
+                },
+            )
+        ).mappings().all()
+
+    return FleetLiveResponse(
+        server_now=server_now.isoformat(),
+        window_start=start.isoformat(),
+        ingested=int(alerts_row["ingested"]),
+        closed_ingest_memoized=closes.get("ingest_memoized", 0),
+        closed_ingest_rules=closes.get("ingest_rules", 0),
+        closed_operational=closes.get("operational", 0),
+        closed_reasoning=closes.get("reasoning", 0),
+        escalated=int(escalated_row["n"]),
+        guard_vetoes=int(veto_row["n"]),
+        in_flight=in_flight,
+        last_alert_at=(
+            alerts_row["last_at"].isoformat() if alerts_row["last_at"] else None
+        ),
+        open_by_stage=open_by_stage,
+        recent_arrivals=[
+            FleetArrival(
+                alert_id=str(r["id"]),
+                investigation_id=(
+                    str(r["investigation_id"]) if r["investigation_id"] else None
+                ),
+                first_event_at=r["first_event_at"].isoformat(),
+                status=r["status"],
+            )
+            for r in arrival_rows
+        ],
+    )
+
+
 @router.get("/api/analytics/fleet-day", response_model=FleetDayResponse)
 async def fleet_day(
     request: Request,
