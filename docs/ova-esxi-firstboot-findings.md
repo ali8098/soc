@@ -1,6 +1,11 @@
 # OVA on ESXi: first-boot failure and fix
 
-Status: confirmed on hardware, fix implemented, pending a rebuild to validate.
+Status: fixed and validated on hardware. The rebuilt v0.2.0 OVA (built from the
+fix at commit 6712ec4) was deployed to real ESXi 8.0.3 with NO cloud-init seed
+and, with no manual intervention, came up fully: ens160 pulled DHCP
+(192.168.200.28) from the shipped name-glob netplan, the setup wizard
+auto-started and served its page on :8443, and firstboot started k3s. This is
+the exact field scenario that failed before the fix.
 
 ## What was tested
 
