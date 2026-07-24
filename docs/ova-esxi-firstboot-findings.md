@@ -1,11 +1,17 @@
 # OVA on ESXi: first-boot failure and fix
 
-Status: fixed and validated on hardware. The rebuilt v0.2.0 OVA (built from the
-fix at commit 6712ec4) was deployed to real ESXi 8.0.3 with NO cloud-init seed
-and, with no manual intervention, came up fully: ens160 pulled DHCP
-(192.168.200.28) from the shipped name-glob netplan, the setup wizard
-auto-started and served its page on :8443, and firstboot started k3s. This is
-the exact field scenario that failed before the fix.
+Status: fixed and validated on BOTH boot paths of the shipped v0.2.0 OVA
+(final fix at commit c9606f5).
+
+- Seeded / cloud-init path: the packer KVM boot-test passes (firstboot runs to
+  completion). This is the path an earlier attempt broke with an ordering cycle
+  (see "First fix attempt" below); it is now green.
+- No-datasource / ESXi path: the released OVA was deployed to real ESXi 8.0.3
+  with NO cloud-init seed and, with no manual intervention, came up fully:
+  ens160 pulled DHCP from the shipped name-glob netplan, the setup wizard
+  auto-started and served its page on :8443, firstboot started (activating),
+  and `journalctl | grep "ordering cycle"` returned 0. This is the exact field
+  scenario that failed before the fix.
 
 ## What was tested
 
