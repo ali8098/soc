@@ -23,6 +23,7 @@ from soctalk.core.api import auth as auth_routes
 from soctalk.core.api import authorization as authorization_routes
 from soctalk.core.api import branding as branding_routes
 from soctalk.core.api import chat as chat_routes
+from soctalk.core.api import fleet_day as fleet_day_routes
 from soctalk.core.api import health as health_routes
 from soctalk.core.api import investigations_bridge as investigations_bridge_routes
 from soctalk.core.api import ir as ir_routes
@@ -277,6 +278,7 @@ def create_app(db_session_middleware: type | None = None) -> FastAPI:
     # investigation_runs into that contract so the dashboard works on
     # multi-tenant L1 without a frontend rewrite.
     app.include_router(investigations_bridge_routes.router)
+    app.include_router(fleet_day_routes.router)
     app.include_router(metrics_bridge_routes.router)
     # MSSP fleet dashboard (cross-tenant queries; rendered on the L1
     # ``/`` homepage when the operator is in MSSP scope, hidden under
