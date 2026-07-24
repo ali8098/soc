@@ -486,17 +486,23 @@ def _dollars_budget_kv(claim_dollars_budget: Any) -> dict[str, float]:
 
 async def _flush_replay_events(
     client: httpx.AsyncClient, run_id: str, lease_id: str, sink: Any
-) -> None:
+) -> bool:
     """Drain the run's replay-event sink to L1 (issue #72).
 
     Isolated failure domain: a transient error requeues the batch for the
     next flush; a 409 (lost lease) kills the sink so a reclaimed run's
     re-emission owns the stream. Never raises — replay beats are
     enrichment and must not perturb heartbeats or completion.
+
+    Returns True when nothing remains pending (flushed, rejected-and-
+    dropped, or sink dead); False when a transient failure requeued the
+    batch — the FINAL flush retries on False, because completion clears
+    the lease and a requeued tail (worker floor, verdict) would be lost
+    forever.
     """
     batch = sink.drain()
     if not batch:
-        return
+        return True
     try:
         resp = await client.post(
             f"{_api_url()}/api/internal/worker/runs/{run_id}/events",
@@ -507,7 +513,7 @@ async def _flush_replay_events(
     except Exception as e:  # noqa: BLE001
         logger.warning("replay_flush_failed run=%s err=%s", run_id, e)
         sink.requeue(batch)
-        return
+        return False
     if resp.status_code == 409:
         logger.info("replay_flush_not_owned run=%s (409; emission stopped)", run_id)
         sink.kill()
@@ -516,6 +522,7 @@ async def _flush_replay_events(
         logger.warning(
             "replay_flush_rejected run=%s status=%s", run_id, resp.status_code
         )
+    return True
 
 
 async def _heartbeat_loop(
@@ -768,7 +775,13 @@ async def _run_one(client: httpx.AsyncClient, claim: dict[str, Any]) -> None:
     }
     # Final replay flush BEFORE complete: completion clears the lease, and
     # a post-completion flush would 409 and drop the tail of the journey.
-    await _flush_replay_events(client, run_id, lease_id, sink)
+    # Bounded retry — the tail carries the worker-floor and verdict beats.
+    for attempt in range(3):
+        if await _flush_replay_events(client, run_id, lease_id, sink):
+            break
+        await asyncio.sleep(min(2**attempt, 4))
+    else:
+        logger.warning("replay_final_flush_gave_up run=%s (tail beats lost)", run_id)
     await _post_complete(client, run_id, complete_payload)
 
 

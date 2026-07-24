@@ -1412,7 +1412,6 @@
 	"fleet_vetoes_title": "Guard vetoes · closes overruled",
 	"fleet_none_yet": "None yet.",
 	"fleet_drill_hint": "Click a dot to open its investigation replay.",
-	"fleet_outcome_closed_unrecorded": "closed (pre-instrumentation)",
 	"fleet_mode_live": "Live",
 	"fleet_mode_replay": "Replay day",
 	"fleet_in_flight": "In flight",

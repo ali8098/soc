@@ -9,6 +9,7 @@
 	import { localizeHref } from '$lib/i18n';
 	import ChatPanel from '$lib/components/chat/ChatPanel.svelte';
 	import ReplayPanel from '$lib/pipeline-viz/ReplayPanel.svelte';
+	import SegmentedTabs from '$lib/components/SegmentedTabs.svelte';
 
 	let chatOpen = false;
 
@@ -548,28 +549,14 @@
 					<div class="flex items-center justify-between mb-4">
 						<div class="flex items-center gap-3">
 							<h3 class="h4">{m.inv_event_timeline()}</h3>
-							<div class="btn-group variant-soft [&>*+*]:border-surface-500/30" role="tablist">
-								<button
-									type="button"
-									class="btn btn-sm {eventView === 'timeline' ? 'variant-filled-primary' : ''}"
-									role="tab"
-									aria-selected={eventView === 'timeline'}
-									on:click={() => (eventView = 'timeline')}
-									data-testid="view-timeline"
-								>
-									{m.replay_view_timeline()}
-								</button>
-								<button
-									type="button"
-									class="btn btn-sm {eventView === 'replay' ? 'variant-filled-primary' : ''}"
-									role="tab"
-									aria-selected={eventView === 'replay'}
-									on:click={() => (eventView = 'replay')}
-									data-testid="view-replay"
-								>
-									{m.replay_view_replay()}
-								</button>
-							</div>
+							<SegmentedTabs
+								value={eventView}
+								options={[
+									{ id: 'timeline', label: m.replay_view_timeline(), testid: 'view-timeline' },
+									{ id: 'replay', label: m.replay_view_replay(), testid: 'view-replay' }
+								]}
+								on:change={(e) => (eventView = e.detail.id === 'replay' ? 'replay' : 'timeline')}
+							/>
 						</div>
 						{#if eventView === 'timeline'}
 							<button class="btn btn-sm variant-soft" on:click={loadEvents} disabled={eventsLoading}>

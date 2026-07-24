@@ -55,7 +55,6 @@ export function eventsToBeats(events: InvestigationTimelineEvent[]): Beat[] {
 			tReal: Math.max(0, Date.parse(e.timestamp) - t0),
 			kind,
 			tone: toneFor(kind, data),
-			support: 'persisted',
 			data,
 			eventKind: e.event_type
 		};

@@ -463,7 +463,11 @@ async def append_run_events(
     skipped with a log, never a 4xx — replay beats are enrichment and one
     bad item must not poison the batch.
     """
-    from soctalk.core.ir.events import EventKind, append_event
+    from soctalk.core.ir.events import (
+        EventKind,
+        append_event,
+        worker_event_idempotency_key,
+    )
     from soctalk.core.ir.models import Visibility
 
     tenant_id = _verify_worker_jwt(request)
@@ -502,7 +506,7 @@ async def append_run_events(
                 if item.visibility in valid_visibilities
                 else Visibility.MSSP_ONLY.value
             )
-            key = event_idempotency_key_for_worker(
+            key = worker_event_idempotency_key(
                 run_id=run_id, lease_id=payload.lease_id, client_ord=item.client_ord
             )
             await append_event(
@@ -520,18 +524,6 @@ async def append_run_events(
     return {"ok": True, "appended": appended}
 
 
-def event_idempotency_key_for_worker(
-    *, run_id: UUID, lease_id: UUID, client_ord: int
-) -> str:
-    """Per-lease idempotency: a retried batch dedupes, a reclaimed lease's
-    re-emission does not collide with the dead lease's rows."""
-    import hashlib
-
-    return hashlib.sha256(
-        f"worker-replay|{run_id}|{lease_id}|{client_ord}".encode()
-    ).hexdigest()
-
-
 @router.post("/runs/{run_id}/complete")
 async def complete_run(
     run_id: UUID, payload: CompletePayload, request: Request
@@ -546,6 +538,9 @@ async def complete_run(
         to at least 12 so the row sorts to the top of the MSSP queue
       - ``leave_open`` (or omitted) → no change to the investigation
     """
+    from soctalk.core.ir import replay_events
+    from soctalk.core.ir.events import append_event as _append_ir_event
+
     tenant_id = _verify_worker_jwt(request)
     db = _db(request)
     investigation_id: UUID | None = None
@@ -611,9 +606,6 @@ async def complete_run(
             # last gate — record its ruling (pass AND veto) in the same
             # transaction that acts on it. The worker cannot emit this one:
             # it runs after the graph finished.
-            from soctalk.core.ir import replay_events
-            from soctalk.core.ir.events import append_event as _append_ir_event
-
             _floor_ev = replay_events.guard_evaluated(
                 stage="server_floor",
                 decision_in="close_fp",
@@ -700,8 +692,6 @@ async def complete_run(
                 # Replay terminal beat (#72): the ending, recorded by the
                 # plane that decided it, same transaction as the close. Path
                 # taxonomy feeds the fleet-day aggregate.
-                from soctalk.core.ir import replay_events as _re
-
                 _path = (
                     "operational"
                     if any(
@@ -710,13 +700,11 @@ async def complete_run(
                     )
                     else "reasoning"
                 )
-                _closed_ev = _re.case_closed(
+                _closed_ev = replay_events.case_closed(
                     path=_path,
                     reason=payload.verdict_summary,
                     run_id=str(run_id),
                 )
-                from soctalk.core.ir.events import append_event as _append_ir_event
-
                 await _append_ir_event(
                     db,
                     tenant_id=tenant_id,

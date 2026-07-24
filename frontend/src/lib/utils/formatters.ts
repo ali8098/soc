@@ -134,6 +134,14 @@ export function formatDuration(seconds: number | null | undefined): string {
 	return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
 }
 
+export function formatRelativeAge(
+	iso: string | null | undefined,
+	nowMs: number
+): string {
+	if (!iso || !nowMs) return '-';
+	return formatDuration(Math.max(0, (nowMs - Date.parse(iso)) / 1000));
+}
+
 export function formatPercent(value: number | null | undefined, decimals = 1): string {
 	if (value === null || value === undefined) return '-';
 	return `${(value * 100).toFixed(decimals)}%`;

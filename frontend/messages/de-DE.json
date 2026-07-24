@@ -1412,7 +1412,6 @@
 	"fleet_vetoes_title": "Wächter-Vetos · aufgehobene Abschlüsse",
 	"fleet_none_yet": "Noch keine.",
 	"fleet_drill_hint": "Klicken Sie auf einen Punkt, um das Replay der Untersuchung zu öffnen.",
-	"fleet_outcome_closed_unrecorded": "geschlossen (vor Instrumentierung)",
 	"fleet_mode_live": "Live",
 	"fleet_mode_replay": "Tages-Replay",
 	"fleet_in_flight": "In Bearbeitung",

@@ -30,6 +30,75 @@ logger = structlog.get_logger()
 router = APIRouter(tags=["fleet-day"], dependencies=[Depends(current_identity)])
 
 
+def _resolve_day_window(
+    tz: str, date: date_type | None
+) -> tuple[date_type, datetime, datetime]:
+    """Local-day window [start, end) for a tz; today when date is None."""
+    try:
+        zone = ZoneInfo(tz)
+    except Exception:
+        raise HTTPException(400, f"unknown timezone: {tz}") from None
+    day = date or datetime.now(zone).date()
+    start = datetime(day.year, day.month, day.day, tzinfo=zone)
+    return day, start, start + timedelta(days=1)
+
+
+async def _close_counts(db: Any, p: dict[str, Any]) -> dict[str, int]:
+    """Terminal-close counts by disposition path within the window."""
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT payload->>'path' AS path, COUNT(*)::int AS n
+                FROM investigation_events
+                WHERE kind = 'auto_closed'
+                  AND created_at >= :s AND created_at < :e
+                GROUP BY path
+                """
+            ),
+            p,
+        )
+    ).mappings().all()
+    return {r["path"]: int(r["n"]) for r in rows}
+
+
+async def _guard_veto_count(db: Any, p: dict[str, Any]) -> int:
+    return int(
+        (
+            await db.execute(
+                text(
+                    """
+                    SELECT COUNT(*)::int AS n
+                    FROM investigation_events
+                    WHERE kind = 'guard_evaluated'
+                      AND payload->>'effect' = 'override'
+                      AND created_at >= :s AND created_at < :e
+                    """
+                ),
+                p,
+            )
+        ).mappings().one()["n"]
+    )
+
+
+async def _escalated_count(db: Any, p: dict[str, Any]) -> int:
+    return int(
+        (
+            await db.execute(
+                text(
+                    """
+                    SELECT COUNT(*)::int AS n
+                    FROM pending_reviews
+                    WHERE ai_decision = 'escalate'
+                      AND created_at >= :s AND created_at < :e
+                    """
+                ),
+                p,
+            )
+        ).mappings().one()["n"]
+    )
+
+
 class FleetDot(BaseModel):
     alert_id: str
     investigation_id: str | None
@@ -152,15 +221,7 @@ async def fleet_live(
     if identity.tenant_id is None:
         raise HTTPException(403, "tenant scope required")
 
-    try:
-        zone = ZoneInfo(tz)
-    except Exception:
-        raise HTTPException(400, f"unknown timezone: {tz}") from None
-
-    local_now = datetime.now(zone)
-    day = local_now.date()
-    start = datetime(day.year, day.month, day.day, tzinfo=zone)
-    end = start + timedelta(days=1)
+    _, start, end = _resolve_day_window(tz, None)
 
     sm = get_app_sessionmaker()
     async with sm() as db, tenant_context(db, identity.tenant_id):
@@ -180,50 +241,9 @@ async def fleet_live(
             )
         ).mappings().one()
 
-        close_rows = (
-            await db.execute(
-                text(
-                    """
-                    SELECT payload->>'path' AS path, COUNT(*)::int AS n
-                    FROM investigation_events
-                    WHERE kind = 'auto_closed'
-                      AND created_at >= :s AND created_at < :e
-                    GROUP BY path
-                    """
-                ),
-                p,
-            )
-        ).mappings().all()
-        closes = {r["path"]: int(r["n"]) for r in close_rows}
-
-        veto_row = (
-            await db.execute(
-                text(
-                    """
-                    SELECT COUNT(*)::int AS n
-                    FROM investigation_events
-                    WHERE kind = 'guard_evaluated'
-                      AND payload->>'effect' = 'override'
-                      AND created_at >= :s AND created_at < :e
-                    """
-                ),
-                p,
-            )
-        ).mappings().one()
-
-        escalated_row = (
-            await db.execute(
-                text(
-                    """
-                    SELECT COUNT(*)::int AS n
-                    FROM pending_reviews
-                    WHERE ai_decision = 'escalate'
-                      AND created_at >= :s AND created_at < :e
-                    """
-                ),
-                p,
-            )
-        ).mappings().one()
+        closes = await _close_counts(db, p)
+        vetoes = await _guard_veto_count(db, p)
+        escalated = await _escalated_count(db, p)
 
         in_flight_row = (
             await db.execute(
@@ -295,8 +315,8 @@ async def fleet_live(
         closed_ingest_rules=closes.get("ingest_rules", 0),
         closed_operational=closes.get("operational", 0),
         closed_reasoning=closes.get("reasoning", 0),
-        escalated=int(escalated_row["n"]),
-        guard_vetoes=int(veto_row["n"]),
+        escalated=escalated,
+        guard_vetoes=vetoes,
         in_flight=in_flight,
         last_alert_at=(
             alerts_row["last_at"].isoformat() if alerts_row["last_at"] else None
@@ -329,15 +349,7 @@ async def fleet_day(
     if identity.tenant_id is None:
         raise HTTPException(403, "tenant scope required")
 
-    try:
-        zone = ZoneInfo(tz)
-    except Exception:
-        raise HTTPException(400, f"unknown timezone: {tz}") from None
-
-    local_now = datetime.now(zone)
-    day = date or local_now.date()
-    start = datetime(day.year, day.month, day.day, tzinfo=zone)
-    end = start + timedelta(days=1)
+    day, start, end = _resolve_day_window(tz, date)
 
     sm = get_app_sessionmaker()
     async with sm() as db, tenant_context(db, identity.tenant_id):
@@ -377,36 +389,9 @@ async def fleet_day(
             if 0 <= int(r["h"]) < 24:
                 histogram[int(r["h"])] = int(r["n"])
 
-        close_rows = (
-            await db.execute(
-                text(
-                    """
-                    SELECT payload->>'path' AS path, COUNT(*)::int AS n
-                    FROM investigation_events
-                    WHERE kind = 'auto_closed'
-                      AND created_at >= :s AND created_at < :e
-                    GROUP BY path
-                    """
-                ),
-                p,
-            )
-        ).mappings().all()
-        closes = {r["path"]: int(r["n"]) for r in close_rows}
-
-        veto_row = (
-            await db.execute(
-                text(
-                    """
-                    SELECT COUNT(*)::int AS n
-                    FROM investigation_events
-                    WHERE kind = 'guard_evaluated'
-                      AND payload->>'effect' = 'override'
-                      AND created_at >= :s AND created_at < :e
-                    """
-                ),
-                p,
-            )
-        ).mappings().one()
+        closes = await _close_counts(db, p)
+        vetoes = await _guard_veto_count(db, p)
+        escalated = await _escalated_count(db, p)
 
         recent_veto_rows = (
             await db.execute(
@@ -424,20 +409,6 @@ async def fleet_day(
                 p,
             )
         ).mappings().all()
-
-        escalated_row = (
-            await db.execute(
-                text(
-                    """
-                    SELECT COUNT(*)::int AS n
-                    FROM pending_reviews
-                    WHERE ai_decision = 'escalate'
-                      AND created_at >= :s AND created_at < :e
-                    """
-                ),
-                p,
-            )
-        ).mappings().one()
 
         spend_row = (
             await db.execute(
@@ -521,7 +492,6 @@ async def fleet_day(
 
     ingested = int(alerts_row["ingested"])
     closed_total = sum(closes.values())
-    escalated = int(escalated_row["n"])
     return FleetDayResponse(
         date=day.isoformat(),
         tz=tz,
@@ -534,7 +504,7 @@ async def fleet_day(
         closed_operational=closes.get("operational", 0),
         closed_reasoning=closes.get("reasoning", 0),
         escalated=escalated,
-        guard_vetoes=int(veto_row["n"]),
+        guard_vetoes=vetoes,
         still_open=max(0, ingested - closed_total - escalated),
         ingest_histogram=histogram,
         dollars_used=float(spend_row["dollars"]),

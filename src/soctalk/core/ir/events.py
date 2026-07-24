@@ -163,6 +163,25 @@ def event_idempotency_key(
     return hashlib.sha256(basis.encode("utf-8")).hexdigest()
 
 
+def worker_event_idempotency_key(
+    *, run_id: UUID, lease_id: UUID, client_ord: int
+) -> str:
+    """Per-lease idempotency for worker-emitted replay beats (issue #72).
+
+    A retried batch dedupes; a reclaimed lease's re-emission never
+    collides with the dead lease's rows."""
+
+    basis = canonical_json(
+        {
+            "kind": "worker-replay",
+            "run_id": str(run_id),
+            "lease_id": str(lease_id),
+            "client_ord": client_ord,
+        }
+    )
+    return hashlib.sha256(basis.encode("utf-8")).hexdigest()
+
+
 def proposal_idempotency_key(
     investigation_id: UUID, action_type: str, params: dict[str, Any]
 ) -> str:
@@ -266,4 +285,5 @@ __all__ = [
     "event_idempotency_key",
     "ioc_fingerprint",
     "proposal_idempotency_key",
+    "worker_event_idempotency_key",
 ]

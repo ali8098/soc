@@ -347,6 +347,8 @@ class TimelineEvent(BaseModel):
 
 class EventTimelineResponse(BaseModel):
     events: list[TimelineEvent]
+    # Legacy-timeline compatibility only (page length, not a grand total);
+    # cursor clients use next_after_seq/has_more instead.
     total: int
     # Replay/cursor envelope (#72). ``server_now`` is the DB clock — the
     # authority the live head derives its offset from (never the browser's).

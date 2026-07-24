@@ -53,37 +53,47 @@
 		veto: boolean;
 	}
 
-	$: activeDots = ready
-		? schedule.reduce<LiveDot[]>((acc, entry) => {
-				if (entry.t <= t && t < entry.t + entry.flight) {
-					const lut = luts[entry.route];
-					if (lut) {
-						const frac = (t - entry.t) / entry.flight;
-						const p = lutPoint(lut, frac);
-						acc.push({
-							entry,
-							x: p.x,
-							y: p.y + entry.jit,
-							veto: entry.dot.veto && frac > 0.8
-						});
-					}
+	// Single pass per tick (#72 quality pass): active dots and all four
+	// counters in one O(n) scan instead of five.
+	$: scan = (() => {
+		const active: LiveDot[] = [];
+		let arrFast = 0;
+		let arrMain = 0;
+		let doneClosed = 0;
+		let doneHuman = 0;
+		for (const entry of schedule) {
+			if (entry.t > t) continue;
+			if (entry.route === 'fast') arrFast++;
+			else if (entry.route === 'reason' || entry.route === 'human') arrMain++;
+			if (entry.t + entry.flight <= t) {
+				if (entry.route === 'fast' || entry.route === 'reason') doneClosed++;
+				else if (entry.route === 'human') doneHuman++;
+			} else if (ready) {
+				const lut = luts[entry.route];
+				if (lut) {
+					const frac = (t - entry.t) / entry.flight;
+					const p = lutPoint(lut, frac);
+					active.push({
+						entry,
+						x: p.x,
+						y: p.y + entry.jit,
+						veto: entry.dot.veto && frac > 0.8
+					});
 				}
-				return acc;
-			}, [])
-		: [];
+			}
+		}
+		return { active, arrFast, arrMain, doneClosed, doneHuman };
+	})();
+	$: activeDots = scan.active;
+	$: arrFast = scan.arrFast;
+	$: arrMain = scan.arrMain;
+	$: doneClosed = scan.doneClosed;
+	$: doneHuman = scan.doneHuman;
 
 	// Lapse: completed-so-far counts come from the sample, scaled by the
 	// disclosed sample rate — for map fills only; the stat rail shows exact
 	// counters. Live: fills and ribbons use EXACT today-so-far counters.
 	$: scale1 = day.sample_rate > 0 ? 1 / day.sample_rate : 1;
-	$: doneClosed = schedule.filter(
-		(e) => (e.route === 'fast' || e.route === 'reason') && e.t + e.flight <= t
-	).length;
-	$: doneHuman = schedule.filter((e) => e.route === 'human' && e.t + e.flight <= t).length;
-	$: arrFast = schedule.filter((e) => e.route === 'fast' && e.t <= t).length;
-	$: arrMain = schedule.filter(
-		(e) => (e.route === 'reason' || e.route === 'human') && e.t <= t
-	).length;
 
 	const totalDay = () => Math.max(1, liveCounts?.ingested ?? day.ingested);
 	const VESSEL_H = 144;

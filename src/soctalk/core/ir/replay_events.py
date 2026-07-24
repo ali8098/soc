@@ -11,8 +11,10 @@ discipline live. Three rules:
    ``customer_safe``; operational detail (supervisor reasoning, worker
    summaries) stays ``mssp_only``. Tenant RLS enforces the split — the
    tenant UI renders missing beats as unavailable, never inferred.
-3. Payloads are versioned (``payload_version``) and capped: free text is
-   clipped with an explicit ``truncated`` marker rather than silently.
+3. Payloads are versioned (``payload_version``) and size-capped: free text
+   and lists are clipped to fixed bounds (``_TEXT_CAP``/``_ITEM_CAP``/
+   ``_LIST_CAP``). Clipping is silent by design — beats are summaries, and
+   the full material lives on the run/review records they point at.
 """
 
 from __future__ import annotations
@@ -204,6 +206,39 @@ def guard_evaluated(
     )
 
 
+def human_review_requested(
+    *,
+    reason: str | None,
+    verdict_decision: str | None,
+    verdict_confidence: float | None,
+) -> ReplayEvent:
+    """The human-lane entry beat. Reason text is analyst-facing →
+    mssp_only; the full review context lives on pending_reviews."""
+
+    return ReplayEvent(
+        kind=EventKind.HUMAN_REVIEW_REQUESTED,
+        visibility=Visibility.MSSP_ONLY.value,
+        payload=_base(
+            {
+                "reason": _clip(reason) or None,
+                "verdict_decision": _clip(verdict_decision, 40) or None,
+                "verdict_confidence": _f(verdict_confidence),
+            }
+        ),
+    )
+
+
+def human_decision(decision: str | None) -> ReplayEvent:
+    """The human ruling beat. Reviewer identity and free-text feedback are
+    deliberately excluded — compact and safe wherever the row is visible."""
+
+    return ReplayEvent(
+        kind=EventKind.HUMAN_DECISION,
+        visibility=Visibility.MSSP_ONLY.value,
+        payload=_base({"decision": _clip(decision, 40) or None}),
+    )
+
+
 def case_closed(
     *,
     path: str,
@@ -235,6 +270,8 @@ __all__ = [
     "ReplayEvent",
     "case_closed",
     "guard_evaluated",
+    "human_decision",
+    "human_review_requested",
     "policy_resolved",
     "supervisor_decision",
     "verdict_rendered",

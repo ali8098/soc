@@ -131,22 +131,23 @@ async def record_human_review_requested(
     )
 
     # 1b. Replay beat (#72): the IR-plane feed drives the flight recorder;
-    # without this the human lane is invisible to replay. Compact payload —
-    # the full review context lives in pending_reviews.
-    from soctalk.core.ir.events import EventKind, append_event
+    # without this the human lane is invisible to replay.
+    from soctalk.core.ir import replay_events
+    from soctalk.core.ir.events import append_event
 
+    hr_ev = replay_events.human_review_requested(
+        reason=reason,
+        verdict_decision=verdict_decision,
+        verdict_confidence=verdict_confidence,
+    )
     await append_event(
         session,
         tenant_id=tenant_id,
         investigation_id=investigation_id,
         run_id=None,
-        kind=EventKind.HUMAN_REVIEW_REQUESTED,
-        payload={
-            "payload_version": 1,
-            "reason": (reason or "")[:2000] or None,
-            "verdict_decision": verdict_decision,
-            "verdict_confidence": verdict_confidence,
-        },
+        kind=hr_ev.kind,
+        payload=hr_ev.payload,
+        visibility=hr_ev.visibility,
         producer="review_events",
     )
 
@@ -252,18 +253,19 @@ async def record_human_decision_received(
         },
     )
 
-    # Replay beat (#72): mirror into the IR-plane feed. Reviewer identity
-    # and free-text feedback stay out — mssp_only default and a compact
-    # payload keep the beat safe to render anywhere the row is visible.
-    from soctalk.core.ir.events import EventKind, append_event
+    # Replay beat (#72): mirror into the IR-plane feed via the typed builder.
+    from soctalk.core.ir import replay_events
+    from soctalk.core.ir.events import append_event
 
+    hd_ev = replay_events.human_decision(decision)
     await append_event(
         session,
         tenant_id=tenant_id,
         investigation_id=investigation_id,
         run_id=None,
-        kind=EventKind.HUMAN_DECISION,
-        payload={"payload_version": 1, "decision": decision},
+        kind=hd_ev.kind,
+        payload=hd_ev.payload,
+        visibility=hd_ev.visibility,
         producer="review_events",
     )
 

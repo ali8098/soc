@@ -1412,7 +1412,6 @@
 	"fleet_vetoes_title": "Vetos de guardia · cierres anulados",
 	"fleet_none_yet": "Ninguno aún.",
 	"fleet_drill_hint": "Haz clic en un punto para abrir el replay de su investigación.",
-	"fleet_outcome_closed_unrecorded": "cerrado (pre-instrumentación)",
 	"fleet_mode_live": "En vivo",
 	"fleet_mode_replay": "Replay del día",
 	"fleet_in_flight": "En curso",

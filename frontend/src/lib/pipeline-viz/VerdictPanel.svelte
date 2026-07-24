@@ -33,13 +33,16 @@
 			<span class="text-xs font-mono opacity-70">{pct}%</span>
 		{/if}
 	</div>
-	{#if verdict.keyEvidence.length > 0}
+	{#if verdict.keyEvidence.length > 0 || verdict.alternatives.length > 0}
 		<ul class="ev">
 			{#each verdict.keyEvidence as line}
 				<li>{line}</li>
 			{/each}
 			{#each verdict.gaps as gap}
 				<li class="gap">{gap}</li>
+			{/each}
+			{#each verdict.alternatives as alt}
+				<li class="alt">{alt}</li>
 			{/each}
 		</ul>
 	{/if}
@@ -84,6 +87,14 @@
 	.ev li.gap::before {
 		content: '?';
 		color: rgb(var(--color-warning-500));
+	}
+	/* Alternative (benign) explanations the model weighed — part of the
+	   receipt: the verdict shows what it considered, not just what won. */
+	.ev li.alt {
+		opacity: 0.7;
+	}
+	.ev li.alt::before {
+		content: '≈';
 	}
 	@media (prefers-reduced-motion: reduce) {
 		.conffill {

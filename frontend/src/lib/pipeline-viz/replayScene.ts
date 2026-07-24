@@ -16,7 +16,6 @@ export function reduceScene(beats: Beat[], lastIndex: number): Scene {
 	const nodes: Scene['nodes'] = {};
 	const edges: Scene['edges'] = {};
 	let verdict: VerdictView | null = null;
-	let status: Scene['status'] = 'triaging';
 
 	const doneNode = (id: NodeId) => {
 		if (nodes[id] === 'active') nodes[id] = 'done';
@@ -105,13 +104,11 @@ export function reduceScene(beats: Beat[], lastIndex: number): Scene {
 					takeEdge('guard-close', 'taken-good');
 				}
 				nodes.close = 'pass';
-				status = 'auto_closed';
 				break;
 			}
 			case 'human_requested':
 				nodes.human = 'warn';
 				takeEdge('guard-human', 'taken-warn');
-				status = 'escalated';
 				break;
 			case 'human_decision': {
 				const decision = String(d.decision ?? '');
@@ -119,7 +116,6 @@ export function reduceScene(beats: Beat[], lastIndex: number): Scene {
 				if (decision === 'reject') {
 					nodes.close = 'pass';
 					takeEdge('human-close', 'taken-good');
-					status = 'auto_closed';
 				}
 				break;
 			}
@@ -128,5 +124,5 @@ export function reduceScene(beats: Beat[], lastIndex: number): Scene {
 		}
 	}
 
-	return { nodes, edges, verdict, status, lastBeatIndex: lastIndex };
+	return { nodes, edges, verdict };
 }

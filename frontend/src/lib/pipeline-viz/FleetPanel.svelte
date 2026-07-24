@@ -2,8 +2,11 @@
 	import { browser } from '$app/environment';
 	import { onDestroy, onMount } from 'svelte';
 	import { api } from '$lib/api/client';
+	import SegmentedTabs from '$lib/components/SegmentedTabs.svelte';
 	import { localizedGoto } from '$lib/i18n';
+	import { formatNumber, formatTime } from '$lib/i18n/format';
 	import { m } from '$lib/paraglide/messages';
+	import { formatRelativeAge } from '$lib/utils/formatters';
 	import FleetMap from './FleetMap.svelte';
 	import {
 		buildArrivalEntries,
@@ -150,19 +153,11 @@
 		void localizedGoto(`/investigations/${e.detail.investigationId}?view=replay`);
 	}
 
+	// The lapse clock is a synthetic 24h position, not a wall time — the
+	// live clock and ages go through the locale-aware shared formatters.
 	const lapseClock = (t: number): string => {
 		const mins = (t / LAPSE_MS) * 1440;
 		return `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(Math.floor(mins % 60)).padStart(2, '0')}`;
-	};
-	const liveClockLabel = (epochMs: number): string => {
-		if (!epochMs) return '—';
-		const d = new Date(epochMs);
-		return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
-	};
-	const fmtAgo = (iso: string | null, nowMs: number): string => {
-		if (!iso || !nowMs) return '—';
-		const s = Math.max(0, Math.floor((nowMs - Date.parse(iso)) / 1000));
-		return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 	};
 
 	$: sampleN = day && day.sample_rate > 0 ? Math.max(1, Math.round(1 / day.sample_rate)) : 1;
@@ -192,27 +187,15 @@
 				{m.replay_live()}
 			</span>
 		{/if}
-		<div class="btn-group variant-soft ml-auto" role="tablist">
-			<button
-				type="button"
-				class="btn btn-sm {mode === 'live' ? 'variant-filled-primary' : ''}"
-				role="tab"
-				aria-selected={mode === 'live'}
-				on:click={() => switchMode('live')}
-				data-testid="fleet-mode-live"
-			>
-				{m.fleet_mode_live()}
-			</button>
-			<button
-				type="button"
-				class="btn btn-sm {mode === 'replay' ? 'variant-filled-primary' : ''}"
-				role="tab"
-				aria-selected={mode === 'replay'}
-				on:click={() => switchMode('replay')}
-				data-testid="fleet-mode-replay"
-			>
-				{m.fleet_mode_replay()}
-			</button>
+		<div class="ml-auto">
+			<SegmentedTabs
+				value={mode}
+				options={[
+					{ id: 'live', label: m.fleet_mode_live(), testid: 'fleet-mode-live' },
+					{ id: 'replay', label: m.fleet_mode_replay(), testid: 'fleet-mode-replay' }
+				]}
+				on:change={(e) => switchMode(e.detail.id === 'live' ? 'live' : 'replay')}
+			/>
 		</div>
 	</div>
 	{#if loading}
@@ -244,7 +227,7 @@
 						/>
 						<div class="flex items-center gap-3 mt-2">
 							<span class="text-xs font-mono opacity-70 tabular-nums" data-testid="fleet-live-clock">
-								{liveClockLabel($clock)}
+								{$clock ? formatTime($clock) : '—'}
 							</span>
 							<p class="text-[0.68rem] font-mono opacity-50">{m.fleet_live_caption()}</p>
 						</div>
@@ -302,20 +285,20 @@
 							</div>
 							<div>
 								<span class="text-[0.65rem] uppercase tracking-wider opacity-50 block">{m.fleet_last_alert()}</span>
-								<span class="text-xl font-mono tabular-nums" data-testid="fleet-last-alert">{fmtAgo(live.last_alert_at, $clock)}</span>
+								<span class="text-xl font-mono tabular-nums" data-testid="fleet-last-alert">{formatRelativeAge(live.last_alert_at, $clock)}</span>
 							</div>
 						{/if}
 						<div>
 							<span class="text-[0.65rem] uppercase tracking-wider opacity-50 block">{m.fleet_ingested()}</span>
-							<span class="text-xl font-mono tabular-nums">{statIngested.toLocaleString()}</span>
+							<span class="text-xl font-mono tabular-nums">{formatNumber(statIngested)}</span>
 						</div>
 						<div>
 							<span class="text-[0.65rem] uppercase tracking-wider opacity-50 block">{m.fleet_closed()}</span>
-							<span class="text-xl font-mono tabular-nums text-success-500">{statClosed.toLocaleString()}</span>
+							<span class="text-xl font-mono tabular-nums text-success-500">{formatNumber(statClosed)}</span>
 						</div>
 						<div>
 							<span class="text-[0.65rem] uppercase tracking-wider opacity-50 block">{m.fleet_human()}</span>
-							<span class="text-xl font-mono tabular-nums text-warning-500">{statEscalated.toLocaleString()}</span>
+							<span class="text-xl font-mono tabular-nums text-warning-500">{formatNumber(statEscalated)}</span>
 						</div>
 						<div>
 							<span class="text-[0.65rem] uppercase tracking-wider opacity-50 block">{m.fleet_vetoes()}</span>
@@ -324,7 +307,7 @@
 						{#if mode === 'replay'}
 							<div>
 								<span class="text-[0.65rem] uppercase tracking-wider opacity-50 block">{m.fleet_open()}</span>
-								<span class="text-xl font-mono tabular-nums">{day.still_open.toLocaleString()}</span>
+								<span class="text-xl font-mono tabular-nums">{formatNumber(day.still_open)}</span>
 							</div>
 							<div>
 								<span class="text-[0.65rem] uppercase tracking-wider opacity-50 block">{m.fleet_spend()}</span>

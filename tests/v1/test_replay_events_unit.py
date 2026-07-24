@@ -99,7 +99,7 @@ def test_builders_never_raise_on_garbage():
     assert ev.payload["fired"] == []
 
 
-def test_clipping_marks_are_bounded():
+def test_clipping_is_bounded():
     long = "z" * 10_000
     ev = re_.supervisor_decision(
         {"next_action": "VERDICT", "action_reasoning": long}, iteration=3

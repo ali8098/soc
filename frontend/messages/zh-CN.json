@@ -1412,7 +1412,6 @@
 	"fleet_vetoes_title": "守卫否决 · 被推翻的关闭",
 	"fleet_none_yet": "暂无。",
 	"fleet_drill_hint": "点击任意点可打开该调查的回放。",
-	"fleet_outcome_closed_unrecorded": "已关闭（插桩之前）",
 	"fleet_mode_live": "实时",
 	"fleet_mode_replay": "回放当日",
 	"fleet_in_flight": "处理中",

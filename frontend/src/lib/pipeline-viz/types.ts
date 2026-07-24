@@ -49,6 +49,8 @@ export type BeatKind =
 
 export type BeatTone = 'neutral' | 'good' | 'warn' | 'bad';
 
+// Every Beat is backed by a persisted event by construction — the adapter
+// only consumes the IR cursor feed (the honesty bar, made structural).
 export interface Beat {
 	seq: number;
 	/** ISO timestamp of the persisted event (server clock). */
@@ -57,8 +59,6 @@ export interface Beat {
 	tReal: number;
 	kind: BeatKind;
 	tone: BeatTone;
-	/** Every rendered beat is backed by a persisted event. */
-	support: 'persisted';
 	/** Raw event payload for detail rendering. */
 	data: Record<string, unknown>;
 	/** Original event kind string (for generic beats). */
@@ -79,68 +79,15 @@ export interface Scene {
 	nodes: Partial<Record<NodeId, NodeState>>;
 	edges: Partial<Record<EdgeId, EdgeState>>;
 	verdict: VerdictView | null;
-	status: 'triaging' | 'auto_closed' | 'escalated';
-	lastBeatIndex: number;
 }
 
-export interface FleetDot {
-	alert_id: string;
-	investigation_id: string | null;
-	first_event_at: string;
-	closed_at: string | null;
-	path: string | null;
-	outcome: 'closed' | 'human' | 'closed_unrecorded' | 'open';
-	veto: boolean;
-}
-
-export interface FleetVetoRow {
-	investigation_id: string;
-	at: string;
-	stage: string | null;
-	fired: string[];
-}
-
-export interface FleetArrival {
-	alert_id: string;
-	investigation_id: string | null;
-	first_event_at: string;
-	status: string | null;
-}
-
-export interface FleetLive {
-	server_now: string;
-	window_start: string;
-	ingested: number;
-	closed_ingest_memoized: number;
-	closed_ingest_rules: number;
-	closed_operational: number;
-	closed_reasoning: number;
-	escalated: number;
-	guard_vetoes: number;
-	in_flight: number;
-	last_alert_at: string | null;
-	open_by_stage: Record<string, number>;
-	recent_arrivals: FleetArrival[];
-}
-
-export interface FleetDay {
-	date: string;
-	tz: string;
-	server_now: string;
-	window_start: string;
-	window_end: string;
-	ingested: number;
-	closed_ingest_memoized: number;
-	closed_ingest_rules: number;
-	closed_operational: number;
-	closed_reasoning: number;
-	escalated: number;
-	guard_vetoes: number;
-	still_open: number;
-	ingest_histogram: number[];
-	dollars_used: number;
-	tokens_used: number;
-	sample_rate: number;
-	dots: FleetDot[];
-	recent_vetoes: FleetVetoRow[];
-}
+// Wire DTOs live with the API client (#72 quality pass: the API layer must
+// not depend on the visualization module). Re-exported here so pipeline-viz
+// internals keep a single types import.
+export type {
+	FleetArrival,
+	FleetDay,
+	FleetDot,
+	FleetLive,
+	FleetVetoRow
+} from '$lib/api/client';

@@ -208,6 +208,71 @@ export interface EventTimelineResponse {
 	has_more?: boolean;
 }
 
+// Fleet flight-recorder wire DTOs (#72). These mirror
+// core/api/fleet_day.py response models; view-only types live in
+// $lib/pipeline-viz.
+export interface FleetDot {
+	alert_id: string;
+	investigation_id: string | null;
+	first_event_at: string;
+	closed_at: string | null;
+	path: string | null;
+	outcome: 'closed' | 'human' | 'closed_unrecorded' | 'open';
+	veto: boolean;
+}
+
+export interface FleetVetoRow {
+	investigation_id: string;
+	at: string;
+	stage: string | null;
+	fired: string[];
+}
+
+export interface FleetDay {
+	date: string;
+	tz: string;
+	server_now: string;
+	window_start: string;
+	window_end: string;
+	ingested: number;
+	closed_ingest_memoized: number;
+	closed_ingest_rules: number;
+	closed_operational: number;
+	closed_reasoning: number;
+	escalated: number;
+	guard_vetoes: number;
+	still_open: number;
+	ingest_histogram: number[];
+	dollars_used: number;
+	tokens_used: number;
+	sample_rate: number;
+	dots: FleetDot[];
+	recent_vetoes: FleetVetoRow[];
+}
+
+export interface FleetArrival {
+	alert_id: string;
+	investigation_id: string | null;
+	first_event_at: string;
+	status: string | null;
+}
+
+export interface FleetLive {
+	server_now: string;
+	window_start: string;
+	ingested: number;
+	closed_ingest_memoized: number;
+	closed_ingest_rules: number;
+	closed_operational: number;
+	closed_reasoning: number;
+	escalated: number;
+	guard_vetoes: number;
+	in_flight: number;
+	last_alert_at: string | null;
+	open_by_stage: Record<string, number>;
+	recent_arrivals: FleetArrival[];
+}
+
 export interface MetricsOverview {
 	open_investigations: number;
 	pending_reviews: number;
@@ -653,25 +718,25 @@ export const api = {
 		},
 
 		// Lightweight live snapshot for the fleet panel (#72; polled 5-10s).
-		getFleetLive: (opts?: { tz?: string }) => {
+		getFleetLive: (opts?: { tz?: string }): Promise<FleetLive> => {
 			const params = new URLSearchParams();
 			if (opts?.tz) params.set('tz', opts.tz);
 			const qs = params.toString();
-			return request<import('$lib/pipeline-viz/types').FleetLive>(
-				`/analytics/fleet-live${qs ? `?${qs}` : ''}`
-			);
+			return request<FleetLive>(`/analytics/fleet-live${qs ? `?${qs}` : ''}`);
 		},
 
 		// Fleet-day aggregate for the flight recorder (#72).
-		getFleetDay: (opts?: { date?: string; tz?: string; sampleLimit?: number }) => {
+		getFleetDay: (opts?: {
+			date?: string;
+			tz?: string;
+			sampleLimit?: number;
+		}): Promise<FleetDay> => {
 			const params = new URLSearchParams();
 			if (opts?.date) params.set('date', opts.date);
 			if (opts?.tz) params.set('tz', opts.tz);
 			if (opts?.sampleLimit) params.set('sample_limit', String(opts.sampleLimit));
 			const qs = params.toString();
-			return request<import('$lib/pipeline-viz/types').FleetDay>(
-				`/analytics/fleet-day${qs ? `?${qs}` : ''}`
-			);
+			return request<FleetDay>(`/analytics/fleet-day${qs ? `?${qs}` : ''}`);
 		},
 
 		kpis: (days?: number) => {
