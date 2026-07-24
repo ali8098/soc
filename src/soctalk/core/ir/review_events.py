@@ -130,6 +130,26 @@ async def record_human_review_requested(
         },
     )
 
+    # 1b. Replay beat (#72): the IR-plane feed drives the flight recorder;
+    # without this the human lane is invisible to replay. Compact payload —
+    # the full review context lives in pending_reviews.
+    from soctalk.core.ir.events import EventKind, append_event
+
+    await append_event(
+        session,
+        tenant_id=tenant_id,
+        investigation_id=investigation_id,
+        run_id=None,
+        kind=EventKind.HUMAN_REVIEW_REQUESTED,
+        payload={
+            "payload_version": 1,
+            "reason": (reason or "")[:2000] or None,
+            "verdict_decision": verdict_decision,
+            "verdict_confidence": verdict_confidence,
+        },
+        producer="review_events",
+    )
+
     # 2. Side effect: bump severity for escalate verdicts so the case
     #    sorts to the top of the MSSP queue.
     if verdict_decision == "escalate":
@@ -230,6 +250,21 @@ async def record_human_decision_received(
             "feedback": feedback,
             "reviewer": reviewer,
         },
+    )
+
+    # Replay beat (#72): mirror into the IR-plane feed. Reviewer identity
+    # and free-text feedback stay out — mssp_only default and a compact
+    # payload keep the beat safe to render anywhere the row is visible.
+    from soctalk.core.ir.events import EventKind, append_event
+
+    await append_event(
+        session,
+        tenant_id=tenant_id,
+        investigation_id=investigation_id,
+        run_id=None,
+        kind=EventKind.HUMAN_DECISION,
+        payload={"payload_version": 1, "decision": decision},
+        producer="review_events",
     )
 
     # 2. Update the queue row.

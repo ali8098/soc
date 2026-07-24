@@ -74,6 +74,8 @@ class EventKind(str, Enum):
     WORKER_RESULT = "worker_result"
     VERDICT_RENDERED = "verdict_rendered"
     GUARD_EVALUATED = "guard_evaluated"
+    HUMAN_REVIEW_REQUESTED = "human_review_requested"
+    HUMAN_DECISION = "human_decision"
 
 
 # Events that ONLY the reducer applies to the projection.
