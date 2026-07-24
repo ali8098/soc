@@ -7,6 +7,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { localizeHref } from '$lib/i18n';
 	import MsspDashboard from '$lib/components/MsspDashboard.svelte';
+	import FleetPanel from '$lib/pipeline-viz/FleetPanel.svelte';
 
 	let metrics: MetricsOverview | null = null;
 	let hourlyData: HourlyMetricsResponse | null = null;
@@ -371,6 +372,10 @@
 		<span>{m.dash_error({ error })}</span>
 	</div>
 {:else if metrics}
+	<!-- Fleet flight recorder, live head (#72): present tense on the server
+	     clock — quiet is legible state, not an animation ritual. -->
+	<FleetPanel defaultMode="live" />
+
 	<!-- KPI Cards -->
 	<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
 		<div class="card p-4 variant-soft">

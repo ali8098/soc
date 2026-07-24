@@ -1412,5 +1412,13 @@
 	"fleet_vetoes_title": "Guard vetoes · closes overruled",
 	"fleet_none_yet": "None yet.",
 	"fleet_drill_hint": "Click a dot to open its investigation replay.",
-	"fleet_outcome_closed_unrecorded": "closed (pre-instrumentation)"
+	"fleet_outcome_closed_unrecorded": "closed (pre-instrumentation)",
+	"fleet_mode_live": "Live",
+	"fleet_mode_replay": "Replay day",
+	"fleet_in_flight": "In flight",
+	"fleet_last_alert": "Last alert",
+	"fleet_live_caption": "Live on the server clock · quiet is the product working",
+	"fleet_replay_day": "Replay the day",
+	"fleet_replay_hint": "Press play to replay the day so far.",
+	"fleet_stage_unknown": "{n} at unknown stage"
 }

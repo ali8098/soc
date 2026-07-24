@@ -351,6 +351,35 @@ Still open from the review: sampled dots must each carry a real alert id
 clicked dot's own investigation, never a representative one — both are
 requirements on the real implementation that the mock cannot satisfy.
 
+## Codex review — round 3, live-by-default adjudication (2026-07-24)
+
+Question: should the fleet hero default to live instead of the 24h→60s
+time-lapse? Verdict adopted and implemented:
+
+- **Default is LIVE on the tenant home dashboard**, as an operational
+  panel. The answer to the quiet problem is state made legible, not
+  motion: last-alert age, in-flight count, and open investigations
+  parked by stage — never an animation ritual (NN/g: repeated
+  animations become ignored roadblocks; SOC practice — Splunk queues,
+  Sentinel's refresh-off default — expects present-tense state, not
+  shows).
+- **Catch-up cam demoted to a once-per-session/day intro** inside live,
+  skipped under reduced motion. "Replay the day" survives as the
+  explicit control.
+- **Analytics keeps the lapse, demoted**: lands on the day-so-far still,
+  plays only on demand. No MSSP-home hero in v1 (`MsspDashboard` is a
+  cross-tenant queue surface and fleet-day requires a pinned tenant).
+- **Live substrate**: a dedicated `GET /api/analytics/fleet-live`
+  (5-10s poll) with exact counters, `last_alert_at`, `in_flight`,
+  `open_by_stage` (each open investigation's LATEST replay beat mapped
+  to a stage; unknown reported as unknown, never faked onto a node),
+  and UNSAMPLED `recent_arrivals` — the md5-ordered day sample can miss
+  or displace a just-arrived alert, so live arrivals get their own
+  feed. The live clock is a server-clock store (`server_now` + offset,
+  rAF paint-only); `createTimeline()` keeps replay semantics and gained
+  only a rate multiplier for the catch-up intro.
+- Deferred: DVR scrub on the fleet, MSSP rollup hero, wall mode.
+
 ## Codex review — round 2, implementation (2026-07-24)
 
 Full transcript in session scratchpad (`codex-impl-review.txt`). Verdict:

@@ -100,6 +100,29 @@ export interface FleetVetoRow {
 	fired: string[];
 }
 
+export interface FleetArrival {
+	alert_id: string;
+	investigation_id: string | null;
+	first_event_at: string;
+	status: string | null;
+}
+
+export interface FleetLive {
+	server_now: string;
+	window_start: string;
+	ingested: number;
+	closed_ingest_memoized: number;
+	closed_ingest_rules: number;
+	closed_operational: number;
+	closed_reasoning: number;
+	escalated: number;
+	guard_vetoes: number;
+	in_flight: number;
+	last_alert_at: string | null;
+	open_by_stage: Record<string, number>;
+	recent_arrivals: FleetArrival[];
+}
+
 export interface FleetDay {
 	date: string;
 	tz: string;

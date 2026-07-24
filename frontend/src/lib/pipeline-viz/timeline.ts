@@ -20,6 +20,8 @@ export interface Timeline extends Readable<TimelineState> {
 	toggle: () => void;
 	seek: (t: number) => void;
 	setDuration: (d: number) => void;
+	/** Playback rate multiplier (catch-up cam uses >1). */
+	setRate: (rate: number) => void;
 	restart: () => void;
 	destroy: () => void;
 }
@@ -29,6 +31,7 @@ export function createTimeline(duration = 0): Timeline {
 	const { subscribe, set } = writable<TimelineState>({ ...state });
 	let raf: number | null = null;
 	let lastNow: number | null = null;
+	let rate = 1;
 
 	const emit = () => set({ ...state });
 
@@ -36,7 +39,7 @@ export function createTimeline(duration = 0): Timeline {
 		if (!state.playing) return;
 		const now = performance.now();
 		if (lastNow !== null) {
-			state.t = Math.min(state.t + (now - lastNow), state.duration);
+			state.t = Math.min(state.t + (now - lastNow) * rate, state.duration);
 		}
 		lastNow = now;
 		if (state.t >= state.duration) {
@@ -83,6 +86,9 @@ export function createTimeline(duration = 0): Timeline {
 			state.duration = Math.max(0, d);
 			state.t = Math.min(state.t, state.duration);
 			emit();
+		},
+		setRate: (r: number) => {
+			rate = Math.max(0.1, r);
 		},
 		restart: () => {
 			state.t = 0;

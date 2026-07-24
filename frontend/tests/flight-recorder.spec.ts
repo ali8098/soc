@@ -108,6 +108,80 @@ test.describe('Investigation replay (flight recorder #72)', () => {
 	});
 });
 
+test.describe('Fleet live head on the home dashboard (#72)', () => {
+	test('defaults to live: server clock, in-flight, last alert, stage badges', async ({ page }) => {
+		await mockAuthMe(page, { current_tenant: TENANT_ID, current_tenant_slug: 'acme' });
+		// Skip the once-per-session catch-up so the head renders immediately.
+		await page.addInitScript(() => {
+			sessionStorage.setItem(`soctalk-fleet-catchup-${new Date().toISOString().slice(0, 10)}`, '1');
+		});
+		await page.route('**/api/metrics/overview', (r) =>
+			r.fulfill({
+				json: {
+					open_investigations: 3,
+					pending_reviews: 2,
+					avg_time_to_triage_seconds: 300,
+					avg_time_to_verdict_seconds: 1800,
+					investigations_created_today: 10,
+					investigations_closed_today: 8,
+					escalations_today: 1,
+					auto_closed_today: 4,
+					malicious_observables_today: 3,
+					verdict_breakdown: { auto_close: 4, escalate: 1 },
+					severity_breakdown: { high: 2, medium: 2 }
+				}
+			})
+		);
+		await page.route('**/api/metrics/hourly*', (r) => r.fulfill({ json: { metrics: [] } }));
+		await page.route('**/api/investigations*', (r) =>
+			r.fulfill({ json: { items: [], total: 0, page: 1, page_size: 10, has_more: false } })
+		);
+		await page.route('**/api/analytics/fleet-day*', (r) =>
+			r.fulfill({
+				json: {
+					date: '2026-07-24', tz: 'UTC', server_now: new Date().toISOString(),
+					window_start: new Date(Date.now() - 12 * 3600_000).toISOString(),
+					window_end: new Date(Date.now() + 12 * 3600_000).toISOString(),
+					ingested: 412, closed_ingest_memoized: 100, closed_ingest_rules: 180,
+					closed_operational: 6, closed_reasoning: 98, escalated: 25, guard_vetoes: 4,
+					still_open: 3, ingest_histogram: Array(24).fill(17), dollars_used: 61,
+					tokens_used: 6_000_000, sample_rate: 1, dots: [], recent_vetoes: []
+				}
+			})
+		);
+		await page.route('**/api/analytics/fleet-live*', (r) =>
+			r.fulfill({
+				json: {
+					server_now: new Date().toISOString(),
+					window_start: new Date(Date.now() - 12 * 3600_000).toISOString(),
+					ingested: 412, closed_ingest_memoized: 100, closed_ingest_rules: 180,
+					closed_operational: 6, closed_reasoning: 98, escalated: 25, guard_vetoes: 4,
+					in_flight: 3,
+					last_alert_at: new Date(Date.now() - 42_000).toISOString(),
+					open_by_stage: { sup: 1, verdict: 1, unknown: 1 },
+					recent_arrivals: [
+						{
+							alert_id: 'live-a-1', investigation_id: 'live-i-1',
+							first_event_at: new Date(Date.now() - 1000).toISOString(), status: 'new'
+						}
+					]
+				}
+			})
+		);
+
+		await page.goto('/');
+		await expect(page.getByTestId('fleet-panel')).toBeVisible({ timeout: 10000 });
+		await expect(page.getByTestId('fleet-live-chip')).toBeVisible();
+		await expect(page.getByTestId('fleet-in-flight')).toHaveText('3');
+		await expect(page.getByTestId('fleet-last-alert')).toContainText('s');
+		await expect(page.locator('[data-stage="sup"]')).toBeVisible();
+		await expect(page.locator('[data-stage="verdict"]')).toBeVisible();
+		// The unknown stage is reported as text, never faked onto a node.
+		await expect(page.locator('[data-stage="unknown"]')).toHaveCount(0);
+		await expect(page.getByTestId('fleet-live-clock')).not.toHaveText('—');
+	});
+});
+
 test.describe('Fleet flight recorder on analytics (#72)', () => {
 	test.beforeEach(async ({ page }) => {
 		await mockAuthMe(page, { current_tenant: TENANT_ID, current_tenant_slug: 'acme' });

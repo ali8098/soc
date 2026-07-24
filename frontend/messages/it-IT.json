@@ -1412,5 +1412,13 @@
 	"fleet_vetoes_title": "Veti della guardia · chiusure annullate",
 	"fleet_none_yet": "Nessuno finora.",
 	"fleet_drill_hint": "Fai clic su un punto per aprire il replay dell'indagine.",
-	"fleet_outcome_closed_unrecorded": "chiuso (pre-strumentazione)"
+	"fleet_outcome_closed_unrecorded": "chiuso (pre-strumentazione)",
+	"fleet_mode_live": "Live",
+	"fleet_mode_replay": "Replay del giorno",
+	"fleet_in_flight": "In corso",
+	"fleet_last_alert": "Ultimo avviso",
+	"fleet_live_caption": "Live sull'orologio del server · il silenzio è il prodotto che funziona",
+	"fleet_replay_day": "Riproduci il giorno",
+	"fleet_replay_hint": "Premi play per riprodurre la giornata finora.",
+	"fleet_stage_unknown": "{n} in fase sconosciuta"
 }

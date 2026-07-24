@@ -1412,5 +1412,13 @@
 	"fleet_vetoes_title": "Vetos da guarda · fechamentos anulados",
 	"fleet_none_yet": "Nenhum ainda.",
 	"fleet_drill_hint": "Clique em um ponto para abrir o replay da investigação.",
-	"fleet_outcome_closed_unrecorded": "fechado (pré-instrumentação)"
+	"fleet_outcome_closed_unrecorded": "fechado (pré-instrumentação)",
+	"fleet_mode_live": "Ao vivo",
+	"fleet_mode_replay": "Replay do dia",
+	"fleet_in_flight": "Em andamento",
+	"fleet_last_alert": "Último alerta",
+	"fleet_live_caption": "Ao vivo no relógio do servidor · o silêncio é o produto funcionando",
+	"fleet_replay_day": "Reproduzir o dia",
+	"fleet_replay_hint": "Aperte play para reproduzir o dia até agora.",
+	"fleet_stage_unknown": "{n} em estágio desconhecido"
 }

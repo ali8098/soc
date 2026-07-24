@@ -652,6 +652,16 @@ export const api = {
 			return request<AnalyticsSummary>(`/analytics/summary${query}`);
 		},
 
+		// Lightweight live snapshot for the fleet panel (#72; polled 5-10s).
+		getFleetLive: (opts?: { tz?: string }) => {
+			const params = new URLSearchParams();
+			if (opts?.tz) params.set('tz', opts.tz);
+			const qs = params.toString();
+			return request<import('$lib/pipeline-viz/types').FleetLive>(
+				`/analytics/fleet-live${qs ? `?${qs}` : ''}`
+			);
+		},
+
 		// Fleet-day aggregate for the flight recorder (#72).
 		getFleetDay: (opts?: { date?: string; tz?: string; sampleLimit?: number }) => {
 			const params = new URLSearchParams();

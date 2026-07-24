@@ -3,7 +3,7 @@
 // Flight time along the map is stretched for legibility and disclosed in
 // the caption — at 24h→60s a real triage would be an invisible blip.
 
-import type { FleetDay, FleetDot } from './types';
+import type { FleetArrival, FleetDay, FleetDot } from './types';
 
 export const LAPSE_MS = 60_000; // 24 h → 60 s
 
@@ -40,6 +40,28 @@ function jitterFor(id: string): number {
 	let h = 0;
 	for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
 	return ((h % 11) - 5) * 1.1;
+}
+
+/** Live arrivals render as brief intake pulses on the server clock;
+ * entry.t is EPOCH ms (the live map's t is the server clock). */
+export const ARRIVAL_FLIGHT_MS = 2500;
+
+export function buildArrivalEntries(arrivals: FleetArrival[]): FleetScheduleEntry[] {
+	return arrivals.map((a) => ({
+		dot: {
+			alert_id: a.alert_id,
+			investigation_id: a.investigation_id,
+			first_event_at: a.first_event_at,
+			closed_at: null,
+			path: null,
+			outcome: 'open' as const,
+			veto: false
+		},
+		route: 'unknown' as const,
+		t: Date.parse(a.first_event_at),
+		flight: ARRIVAL_FLIGHT_MS,
+		jit: jitterFor(a.alert_id)
+	}));
 }
 
 export function buildFleetSchedule(day: FleetDay): FleetScheduleEntry[] {

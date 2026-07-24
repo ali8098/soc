@@ -7,8 +7,19 @@
 
 	export let day: FleetDay;
 	export let schedule: FleetScheduleEntry[] = [];
-	/** Playback time in ms (0..LAPSE_MS). */
+	/** Playback time in ms. Lapse: 0..LAPSE_MS. Live: server epoch ms. */
 	export let t = 0;
+	/** 'lapse' replays the day; 'live' renders the present on the server clock. */
+	export let mode: 'lapse' | 'live' = 'lapse';
+	/** Live only: open investigations by parked stage (from latest replay beat). */
+	export let openByStage: Record<string, number> = {};
+	/** Live only: exact today-so-far counters for fills/ribbons. */
+	export let liveCounts: {
+		ingested: number;
+		closed: number;
+		reasoning: number;
+		escalated: number;
+	} | null = null;
 
 	const dispatch = createEventDispatcher<{ drill: { investigationId: string } }>();
 
@@ -61,8 +72,9 @@
 			}, [])
 		: [];
 
-	// Completed-so-far counts from the sample, scaled by the disclosed
-	// sample rate for map fills only; the stat rail shows exact counters.
+	// Lapse: completed-so-far counts come from the sample, scaled by the
+	// disclosed sample rate — for map fills only; the stat rail shows exact
+	// counters. Live: fills and ribbons use EXACT today-so-far counters.
 	$: scale1 = day.sample_rate > 0 ? 1 / day.sample_rate : 1;
 	$: doneClosed = schedule.filter(
 		(e) => (e.route === 'fast' || e.route === 'reason') && e.t + e.flight <= t
@@ -73,12 +85,47 @@
 		(e) => (e.route === 'reason' || e.route === 'human') && e.t <= t
 	).length;
 
-	const totalDay = () => Math.max(1, day.ingested);
+	const totalDay = () => Math.max(1, liveCounts?.ingested ?? day.ingested);
 	const VESSEL_H = 144;
-	$: closeFillH = Math.min(VESSEL_H, ((doneClosed * scale1) / totalDay()) * VESSEL_H);
-	$: humanFillH = Math.min(VESSEL_H, ((doneHuman * scale1) / totalDay()) * VESSEL_H);
-	const ribW = (n: number) => (n === 0 ? 0 : 1.5 + 15 * Math.min(1, (n * 1) / Math.max(1, schedule.length)));
+	$: closeFillH = Math.min(
+		VESSEL_H,
+		((liveCounts ? liveCounts.closed : doneClosed * scale1) / totalDay()) * VESSEL_H
+	);
+	$: humanFillH = Math.min(
+		VESSEL_H,
+		((liveCounts ? liveCounts.escalated : doneHuman * scale1) / totalDay()) * VESSEL_H
+	);
+	const ribWidth = (frac: number) => (frac <= 0 ? 0 : 1.5 + 15 * Math.min(1, frac));
+	$: fastFrac = liveCounts
+		? Math.max(0, liveCounts.closed - liveCounts.reasoning) / totalDay()
+		: arrFast / Math.max(1, schedule.length);
+	$: mainFrac = liveCounts
+		? (liveCounts.reasoning + liveCounts.escalated) / totalDay()
+		: arrMain / Math.max(1, schedule.length);
 	$: guardHot = activeDots.some((d) => d.veto);
+
+	// Live stage badges: worker stages collapse onto the supervisor hub at
+	// this altitude (the fleet map has no worker satellites); 'unknown' is
+	// reported in the rail, never faked onto a node.
+	const BADGE_POS: Record<string, { x: number; y: number }> = {
+		gate: { x: 244, y: 126 },
+		sup: { x: 446, y: 164 },
+		verdict: { x: 700, y: 164 },
+		guard: { x: 884, y: 122 },
+		human: { x: 938, y: 150 }
+	};
+	$: badges =
+		mode === 'live'
+			? Object.entries(
+					Object.entries(openByStage).reduce<Record<string, number>>((acc, [stage, n]) => {
+						const target = ['wazuh', 'cortex', 'misp', 'authz', 'thehive'].includes(stage)
+							? 'sup'
+							: stage;
+						if (target in BADGE_POS) acc[target] = (acc[target] ?? 0) + n;
+						return acc;
+					}, {})
+				).filter(([, n]) => n > 0)
+			: [];
 
 	function onDotClick(dot: LiveDot) {
 		if (dot.entry.dot.investigation_id) {
@@ -89,9 +136,9 @@
 
 <div class="map-wrap" data-testid="fleet-map">
 	<svg viewBox="0 0 1080 420" role="img" aria-label={m.fleet_title()}>
-		<!-- volume ribbons (sample-derived widths; legend discloses) -->
-		<path class="rib rib-fast" style={`stroke-width:${ribW(arrFast)}`} d="M204 222 C 204 355, 700 388, 972 390" />
-		<path class="rib rib-main" style={`stroke-width:${ribW(arrMain)}`} d="M212 210 H 836" />
+		<!-- volume ribbons (lapse: sample-derived; live: exact counters) -->
+		<path class="rib rib-fast" style={`stroke-width:${ribWidth(fastFrac)}`} d="M204 222 C 204 355, 700 388, 972 390" />
+		<path class="rib rib-main" style={`stroke-width:${ribWidth(mainFrac)}`} d="M212 210 H 836" />
 
 		<!-- dot rails (invisible; sampled into LUTs at mount) -->
 		{#each Object.entries(RAILS) as [route, d] (route)}
@@ -156,6 +203,14 @@
 		</text>
 
 		<text class="glabel tiny" x="430" y="366">{m.replay_fast_path_label()}</text>
+
+		<!-- live: open investigations parked by stage (honest queue depth) -->
+		{#each badges as [stage, count] (stage)}
+			<g class="badge-pill" data-stage={stage}>
+				<rect x={BADGE_POS[stage].x - 16} y={BADGE_POS[stage].y - 11} width="32" height="16" rx="8" />
+				<text x={BADGE_POS[stage].x} y={BADGE_POS[stage].y + 1} text-anchor="middle">{count}</text>
+			</g>
+		{/each}
 	</svg>
 </div>
 
@@ -242,5 +297,16 @@
 	}
 	.cnt.warn {
 		fill: rgb(var(--color-warning-400));
+	}
+	.badge-pill rect {
+		fill: rgb(var(--color-primary-500) / 0.18);
+		stroke: rgb(var(--color-primary-500) / 0.6);
+		stroke-width: 1;
+	}
+	.badge-pill text {
+		fill: rgb(var(--color-primary-300));
+		font-family: ui-monospace, Menlo, monospace;
+		font-size: 10px;
+		font-variant-numeric: tabular-nums;
 	}
 </style>
