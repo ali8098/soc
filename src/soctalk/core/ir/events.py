@@ -64,6 +64,17 @@ class EventKind(str, Enum):
     BUDGET_WARNING = "budget_warning"
     BUDGET_HALT = "budget_halt"
 
+    # Pipeline replay beats (issue #72). Emitted by the triage pipeline —
+    # graph nodes via the worker event sink, plus the L1 close paths — and
+    # consumed by the flight-recorder surfaces. Never applied by the
+    # reducer: the projection is row-side state; these are the journey.
+    POLICY_RESOLVED = "policy_resolved"
+    SUPERVISOR_DECISION = "supervisor_decision"
+    WORKER_STARTED = "worker_started"
+    WORKER_RESULT = "worker_result"
+    VERDICT_RENDERED = "verdict_rendered"
+    GUARD_EVALUATED = "guard_evaluated"
+
 
 # Events that ONLY the reducer applies to the projection.
 REDUCER_APPLIES: frozenset[EventKind] = frozenset(
