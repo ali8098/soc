@@ -54,9 +54,17 @@ def route_from_resolve_triage_policy(state: dict[str, Any]) -> Literal[
             disposition=disposition,
         )
         return "supervisor"
-    vetoes = operational_close_vetoes(
-        state.get("investigation") or {},
-        class_rule_groups=(triage_policy.get("applies_to") or {}).get("rule_groups"),
+    # Prefer the veto result the resolver node stashed (and emitted as the
+    # POLICY_RESOLVED replay beat, #72) so router and event can never
+    # disagree; fall back to computing for states built outside the node.
+    stashed = state.get("operational_vetoes")
+    vetoes = (
+        list(stashed)
+        if stashed is not None
+        else operational_close_vetoes(
+            state.get("investigation") or {},
+            class_rule_groups=(triage_policy.get("applies_to") or {}).get("rule_groups"),
+        )
     )
     if vetoes:
         logger.info(

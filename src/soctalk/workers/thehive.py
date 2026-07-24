@@ -8,6 +8,8 @@ from typing import Any
 
 import structlog
 
+from soctalk.core.ir import replay_events
+from soctalk.graph.event_sink import emit as emit_replay
 from soctalk.mcp.bindings import get_thehive_client
 from soctalk.models.enums import Phase, InvestigationStatus, Severity
 from soctalk.models.investigation import InvestigationRunState
@@ -32,6 +34,7 @@ async def thehive_worker_node(
         Updated state dictionary.
     """
     logger.info("thehive_worker_started")
+    emit_replay(replay_events.worker_started("thehive"))
 
     client = get_thehive_client()
     investigation_data = state.get("investigation", {})
@@ -67,6 +70,13 @@ async def thehive_worker_node(
         state["error_count"] = state.get("error_count", 0) + 1
 
     state["last_updated"] = datetime.now().isoformat()
+    emit_replay(
+        replay_events.worker_result(
+            "thehive",
+            ok=state.get("last_error") is None,
+            summary=state.get("last_error"),
+        )
+    )
     return state
 
 

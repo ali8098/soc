@@ -7,6 +7,8 @@ from typing import Any
 
 import structlog
 
+from soctalk.core.ir import replay_events
+from soctalk.graph.event_sink import emit as emit_replay
 from soctalk.mcp.bindings import get_wazuh_client
 from soctalk.models.enums import Phase, Severity
 from soctalk.models.investigation import Finding
@@ -30,6 +32,7 @@ async def wazuh_worker_node(state: dict[str, Any]) -> dict[str, Any]:
         Updated state dictionary.
     """
     logger.info("wazuh_worker_started")
+    emit_replay(replay_events.worker_started("wazuh", action="INVESTIGATE"))
 
     client = get_wazuh_client()
     investigation = state.get("investigation", {})
@@ -60,6 +63,13 @@ async def wazuh_worker_node(state: dict[str, Any]) -> dict[str, Any]:
         state["error_count"] = state.get("error_count", 0) + 1
 
     state["last_updated"] = datetime.now().isoformat()
+    emit_replay(
+        replay_events.worker_result(
+            "wazuh",
+            ok=state.get("last_error") is None,
+            summary=state.get("last_error"),
+        )
+    )
     return state
 
 

@@ -156,6 +156,11 @@ async def verdict_node(
         state["verdict"] = verdict.model_dump()
         state["current_phase"] = Phase.VERDICT.value
 
+        from soctalk.core.ir import replay_events
+        from soctalk.graph.event_sink import emit as emit_replay
+
+        emit_replay(replay_events.verdict_rendered(state["verdict"]))
+
         # Track retry count for NEEDS_MORE_INFO decisions
         if verdict.decision == VerdictDecision.NEEDS_MORE_INFO:
             state["verdict_retry_count"] = state.get("verdict_retry_count", 0) + 1

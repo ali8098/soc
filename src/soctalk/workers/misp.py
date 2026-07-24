@@ -9,6 +9,8 @@ from typing import Any
 
 import structlog
 
+from soctalk.core.ir import replay_events
+from soctalk.graph.event_sink import emit as emit_replay
 from soctalk.mcp.bindings import get_misp_client
 from soctalk.models.enums import ObservableType, Verdict, Phase, Severity
 from soctalk.models.observables import Observable
@@ -44,6 +46,7 @@ async def misp_worker_node(state: dict[str, Any]) -> dict[str, Any]:
         Updated state dictionary.
     """
     logger.info("misp_worker_started")
+    emit_replay(replay_events.worker_started("misp", action="CONTEXTUALIZE"))
 
     client = get_misp_client()
     investigation = state.get("investigation", {})
@@ -67,6 +70,11 @@ async def misp_worker_node(state: dict[str, Any]) -> dict[str, Any]:
 
     if not observables_to_check:
         logger.info("no_observables_to_check_in_misp")
+        emit_replay(
+            replay_events.worker_result(
+                "misp", ok=True, summary="no unchecked observables"
+            )
+        )
         return state
 
     # Process observables (limit to 10 per iteration)
@@ -151,6 +159,17 @@ async def misp_worker_node(state: dict[str, Any]) -> dict[str, Any]:
         warninglist_hits=len(warninglist_hits),
     )
 
+    emit_replay(
+        replay_events.worker_result(
+            "misp",
+            ok=True,
+            counts={
+                "checked": len(checked_values),
+                "matches": len(misp_matches),
+                "warninglist_hits": len(warninglist_hits),
+            },
+        )
+    )
     return state
 
 

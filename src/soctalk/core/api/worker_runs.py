@@ -203,6 +203,19 @@ class WorkerHeartbeatPayload(BaseModel):
     dollars_used: float | None = Field(default=None, ge=0.0)
 
 
+class WorkerEventItem(BaseModel):
+    kind: str = Field(max_length=64)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    visibility: str = Field(default="mssp_only", max_length=32)
+    client_ord: int = Field(ge=1)
+    occurred_at: str | None = Field(default=None, max_length=64)
+
+
+class WorkerEventsPayload(BaseModel):
+    lease_id: UUID
+    events: list[WorkerEventItem] = Field(default_factory=list, max_length=200)
+
+
 class CompletePayload(BaseModel):
     lease_id: UUID
     status: str = Field(pattern=r"^(completed|halted_budget|failed)$")
@@ -434,6 +447,89 @@ async def heartbeat_run(
         if result.rowcount == 0:
             raise HTTPException(409, "lease expired or run not active")
     return {"ok": True, "lease_expires_at": new_expiry.isoformat()}
+
+
+@router.post("/runs/{run_id}/events")
+async def append_run_events(
+    run_id: UUID, payload: WorkerEventsPayload, request: Request
+) -> dict[str, Any]:
+    """Append replay beats emitted by the graph plane (issue #72, Phase 0).
+
+    Lease-checked with the same ownership predicate as heartbeat: a batch
+    from a lost lease gets a 409 and the worker stops emitting (the
+    reclaiming worker re-emits; per-lease idempotency keys dedupe). The
+    server assigns ``seq`` via ``append_event``; ``client_ord`` only
+    orders the batch and keys idempotency. Invalid kinds/visibilities are
+    skipped with a log, never a 4xx — replay beats are enrichment and one
+    bad item must not poison the batch.
+    """
+    from soctalk.core.ir.events import EventKind, append_event
+    from soctalk.core.ir.models import Visibility
+
+    tenant_id = _verify_worker_jwt(request)
+    db = _db(request)
+    valid_visibilities = {v.value for v in Visibility}
+    appended = 0
+    async with tenant_context(db, tenant_id):
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT investigation_id FROM investigation_runs
+                     WHERE id = :id
+                       AND tenant_id = :t
+                       AND lease_id = :lid
+                       AND status = 'active'
+                    """
+                ),
+                {"id": str(run_id), "t": str(tenant_id), "lid": str(payload.lease_id)},
+            )
+        ).mappings().first()
+        if row is None:
+            raise HTTPException(409, "lease expired or run not active")
+        investigation_id = row["investigation_id"]
+
+        for item in sorted(payload.events, key=lambda e: e.client_ord):
+            try:
+                kind = EventKind(item.kind)
+            except ValueError:
+                logger.warning(
+                    "worker_event_unknown_kind", run_id=str(run_id), kind=item.kind
+                )
+                continue
+            visibility = (
+                item.visibility
+                if item.visibility in valid_visibilities
+                else Visibility.MSSP_ONLY.value
+            )
+            key = event_idempotency_key_for_worker(
+                run_id=run_id, lease_id=payload.lease_id, client_ord=item.client_ord
+            )
+            await append_event(
+                db,
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                run_id=run_id,
+                kind=kind,
+                payload={**item.payload, "occurred_at": item.occurred_at},
+                visibility=visibility,
+                idempotency_key=key,
+                producer="runs_worker",
+            )
+            appended += 1
+    return {"ok": True, "appended": appended}
+
+
+def event_idempotency_key_for_worker(
+    *, run_id: UUID, lease_id: UUID, client_ord: int
+) -> str:
+    """Per-lease idempotency: a retried batch dedupes, a reclaimed lease's
+    re-emission does not collide with the dead lease's rows."""
+    import hashlib
+
+    return hashlib.sha256(
+        f"worker-replay|{run_id}|{lease_id}|{client_ord}".encode()
+    ).hexdigest()
 
 
 @router.post("/runs/{run_id}/complete")

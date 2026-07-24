@@ -27,15 +27,37 @@ import structlog
 
 from soctalk.authorization.engine import evaluate_authorization
 from soctalk.authorization.render import has_malicious_signal, parse_authorization_context
+from soctalk.core.ir import replay_events
+from soctalk.graph.event_sink import emit as emit_replay
 from soctalk.triage_policy.guard import (
     decision_value,
     evaluate_guard,
     shadow_guardrail_audits,
 )
-from soctalk.triage_policy.models import CLOSE_OPERATIONAL, GATHER_AUTHORIZATION_CONTEXT
+from soctalk.triage_policy.models import (
+    CLOSE_OPERATIONAL,
+    GATHER_AUTHORIZATION_CONTEXT,
+    KNOWN_DISPOSITIONS,
+)
+from soctalk.triage_policy.operational import (
+    VETO_MALICIOUS,
+    VETO_MITRE,
+    VETO_OBSERVABLES,
+    VETO_SEVERITY,
+    VETO_UNATTESTED_CLASS,
+    operational_close_vetoes,
+)
 from soctalk.triage_policy.registry import match_shadow_triage_policies, match_triage_policy
 
 logger = structlog.get_logger()
+
+OPERATIONAL_VETO_CHECKLIST = [
+    VETO_MITRE,
+    VETO_OBSERVABLES,
+    VETO_SEVERITY,
+    VETO_MALICIOUS,
+    VETO_UNATTESTED_CLASS,
+]
 
 
 async def resolve_triage_policy_node(state: dict[str, Any]) -> dict[str, Any]:
@@ -60,6 +82,29 @@ async def resolve_triage_policy_node(state: dict[str, Any]) -> dict[str, Any]:
         logger.info(
             "triage_policy_shadow_matched", triage_policies=[p.id for p in shadow]
         )
+
+    # Replay beat (#72): the policy gate's ruling, including the operational
+    # veto checklist when a deterministic disposition is on the table. The
+    # vetoes are computed HERE (same args as the router) and stashed so the
+    # routing function reads this result instead of recomputing — the router
+    # stays pure and can never disagree with the emitted event.
+    tp = (state.get("triage_policy") or {}) if triage_policy is not None else {}
+    disposition = tp.get("deterministic_disposition")
+    vetoes: list[str] | None = None
+    if disposition and disposition in KNOWN_DISPOSITIONS:
+        vetoes = operational_close_vetoes(
+            investigation,
+            class_rule_groups=(tp.get("applies_to") or {}).get("rule_groups"),
+        )
+        state["operational_vetoes"] = vetoes
+    emit_replay(
+        replay_events.policy_resolved(
+            triage_policy=tp or None,
+            deterministic_disposition=disposition,
+            vetoes_checked=OPERATIONAL_VETO_CHECKLIST if vetoes is not None else [],
+            vetoes_fired=vetoes or [],
+        )
+    )
     return state
 
 
@@ -76,6 +121,7 @@ async def gather_authorization_context_node(state: dict[str, Any]) -> dict[str, 
     if GATHER_AUTHORIZATION_CONTEXT not in steps:
         steps.append(GATHER_AUTHORIZATION_CONTEXT)
 
+    emit_replay(replay_events.worker_started("authorization_context"))
     investigation = state.get("investigation", {}) or {}
     ctx = parse_authorization_context(investigation)
     if ctx is None:
@@ -84,6 +130,14 @@ async def gather_authorization_context_node(state: dict[str, Any]) -> dict[str, 
         # contradicted rubric takes it from here.
         state["authorization_gathered"] = {"status": "absent", "facts": 0}
         logger.info("authorization_context_gathered", status="absent")
+        emit_replay(
+            replay_events.worker_result(
+                "authorization_context",
+                ok=True,
+                summary="no authorization record of the right kind in any connected source",
+                counts={"facts": 0},
+            )
+        )
         return state
 
     components = evaluate_authorization(ctx.activity, ctx.facts, ctx.tenant)
@@ -100,6 +154,14 @@ async def gather_authorization_context_node(state: dict[str, Any]) -> dict[str, 
         status="present",
         facts=len(ctx.facts),
         engine_decision=components.decision,
+    )
+    emit_replay(
+        replay_events.worker_result(
+            "authorization_context",
+            ok=True,
+            summary=f"authorization evidence gathered: engine decision {components.decision}",
+            counts={"facts": len(ctx.facts)},
+        )
     )
     return state
 
@@ -136,6 +198,15 @@ async def operational_close_node(state: dict[str, Any]) -> dict[str, Any]:
     )
     state["operational_close"] = True
     logger.info("operational_close_applied", triage_policy=triage_policy.get("id"))
+    emit_replay(
+        replay_events.guard_evaluated(
+            stage="operational",
+            decision_in=CLOSE_OPERATIONAL,
+            decision_out=CLOSE_OPERATIONAL,
+            effect="pass",
+            checklist=OPERATIONAL_VETO_CHECKLIST,
+        )
+    )
     return state
 
 
@@ -193,6 +264,16 @@ async def verdict_guard_node(state: dict[str, Any]) -> dict[str, Any]:
         logger.debug(
             "verdict_guard_pass", decision=draft_decision, authz_class=result.authz_class
         )
+        # Replay beat (#72): passes are recorded, not just vetoes — the
+        # receipt must show the gate was open, not absent.
+        emit_replay(
+            replay_events.guard_evaluated(
+                stage="verdict_guard",
+                decision_in=draft_decision,
+                decision_out=draft_decision,
+                effect="pass",
+            )
+        )
         return state
 
     audit = {
@@ -240,4 +321,14 @@ async def verdict_guard_node(state: dict[str, Any]) -> dict[str, Any]:
             to_decision=o.to_decision,
             authz_class=result.authz_class,
         )
+    emit_replay(
+        replay_events.guard_evaluated(
+            stage="verdict_guard",
+            decision_in=draft_decision,
+            decision_out=result.final_decision if result.overridden else draft_decision,
+            effect="interrupt" if result.interrupted else "override",
+            fired=[o.guardrail for o in result.overrides],
+            reasons=[o.reason for o in result.overrides],
+        )
+    )
     return state

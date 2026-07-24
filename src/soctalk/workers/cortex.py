@@ -8,6 +8,8 @@ from typing import Any
 
 import structlog
 
+from soctalk.core.ir import replay_events
+from soctalk.graph.event_sink import emit as emit_replay
 from soctalk.mcp.bindings import get_cortex_client
 from soctalk.models.enums import ObservableType, Verdict, Phase
 from soctalk.models.observables import Observable, EnrichmentResult
@@ -62,6 +64,7 @@ async def cortex_worker_node(
         Updated state dictionary.
     """
     logger.info("cortex_worker_started")
+    emit_replay(replay_events.worker_started("cortex", action="ENRICH"))
 
     client = get_cortex_client()
     investigation = state.get("investigation", {})
@@ -78,6 +81,11 @@ async def cortex_worker_node(
     if not observables_to_process:
         logger.info("no_observables_to_enrich")
         state["current_phase"] = Phase.ANALYSIS.value
+        emit_replay(
+            replay_events.worker_result(
+                "cortex", ok=True, summary="no observables to enrich"
+            )
+        )
         return state
 
     enrichments = investigation.get("enrichments", [])
@@ -140,6 +148,13 @@ async def cortex_worker_node(
         "cortex_worker_completed",
         enriched=len(processed_values),
         remaining=len(new_pending),
+    )
+    emit_replay(
+        replay_events.worker_result(
+            "cortex",
+            ok=True,
+            counts={"enriched": len(processed_values), "remaining": len(new_pending)},
+        )
     )
 
     return state

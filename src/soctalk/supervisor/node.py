@@ -11,7 +11,9 @@ from langchain_core.messages import HumanMessage
 
 from soctalk.authorization.render import supervisor_authorization_lines
 from soctalk.config import get_config
+from soctalk.core.ir import replay_events
 from soctalk.graph import budget as token_budget
+from soctalk.graph.event_sink import emit as emit_replay
 from soctalk.inference import (
     InferenceAccounting,
     InferenceRequest,
@@ -100,6 +102,12 @@ async def supervisor_node(
             specific_instructions=None,
         ).model_dump()
         state["budget_terminated"] = True
+        emit_replay(
+            replay_events.supervisor_decision(
+                state["supervisor_decision"],
+                iteration=state.get("iteration_count", 0),
+            )
+        )
         return state
 
     # Increment iteration counter
@@ -116,6 +124,11 @@ async def supervisor_node(
             confidence_reasoning="Unable to reach conclusion within iteration limit",
         ).model_dump()
         state["current_phase"] = Phase.VERDICT.value
+        emit_replay(
+            replay_events.supervisor_decision(
+                state["supervisor_decision"], iteration=iteration
+            )
+        )
         return state
 
     # Build context summary
@@ -143,6 +156,11 @@ async def supervisor_node(
             action=decision.next_action,
             confidence=decision.tp_confidence,
             reasoning=decision.action_reasoning[:100],
+        )
+        emit_replay(
+            replay_events.supervisor_decision(
+                state["supervisor_decision"], iteration=iteration
+            )
         )
 
     except Exception as e:

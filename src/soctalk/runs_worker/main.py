@@ -484,12 +484,47 @@ def _dollars_budget_kv(claim_dollars_budget: Any) -> dict[str, float]:
     return {}
 
 
+async def _flush_replay_events(
+    client: httpx.AsyncClient, run_id: str, lease_id: str, sink: Any
+) -> None:
+    """Drain the run's replay-event sink to L1 (issue #72).
+
+    Isolated failure domain: a transient error requeues the batch for the
+    next flush; a 409 (lost lease) kills the sink so a reclaimed run's
+    re-emission owns the stream. Never raises — replay beats are
+    enrichment and must not perturb heartbeats or completion.
+    """
+    batch = sink.drain()
+    if not batch:
+        return
+    try:
+        resp = await client.post(
+            f"{_api_url()}/api/internal/worker/runs/{run_id}/events",
+            headers={"Authorization": f"Bearer {_read_token()}"},
+            json={"lease_id": lease_id, "events": batch},
+            timeout=10.0,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("replay_flush_failed run=%s err=%s", run_id, e)
+        sink.requeue(batch)
+        return
+    if resp.status_code == 409:
+        logger.info("replay_flush_not_owned run=%s (409; emission stopped)", run_id)
+        sink.kill()
+    elif resp.status_code >= 400:
+        # Payload-level rejection will not heal on retry — drop the batch.
+        logger.warning(
+            "replay_flush_rejected run=%s status=%s", run_id, resp.status_code
+        )
+
+
 async def _heartbeat_loop(
     client: httpx.AsyncClient,
     run_id: str,
     lease_id: str,
     state: dict[str, Any],
     stop: asyncio.Event,
+    sink: Any = None,
 ) -> None:
     token = _read_token()
     while not stop.is_set():
@@ -500,6 +535,8 @@ async def _heartbeat_loop(
             return
         except TimeoutError:
             pass
+        if sink is not None:
+            await _flush_replay_events(client, run_id, lease_id, sink)
         try:
             await client.post(
                 f"{_api_url()}/api/internal/worker/runs/{run_id}/heartbeat",
@@ -578,6 +615,7 @@ async def _post_complete(
 
 async def _run_one(client: httpx.AsyncClient, claim: dict[str, Any]) -> None:
     from soctalk.graph.builder import build_secops_graph
+    from soctalk.graph.event_sink import EVENT_SINK, RunEventSink
 
     run_id = str(claim["run_id"])
     lease_id = str(claim["lease_id"])
@@ -585,9 +623,14 @@ async def _run_one(client: httpx.AsyncClient, claim: dict[str, Any]) -> None:
     state = _build_state(claim)
     graph = build_secops_graph()
 
+    # Replay event sink (#72): set BEFORE ainvoke so graph nodes (same task
+    # context) can emit; flushed alongside heartbeats and once at the end.
+    sink = RunEventSink()
+    sink_token = EVENT_SINK.set(sink)
+
     stop = asyncio.Event()
     hb = asyncio.create_task(
-        _heartbeat_loop(client, run_id, lease_id, state, stop),
+        _heartbeat_loop(client, run_id, lease_id, state, stop, sink),
         name=f"hb-{run_id[:8]}",
     )
     final: dict[str, Any] = {}
@@ -600,6 +643,7 @@ async def _run_one(client: httpx.AsyncClient, claim: dict[str, Any]) -> None:
     finally:
         stop.set()
         await hb
+        EVENT_SINK.reset(sink_token)
 
     used = int(final.get("tokens_used", state.get("tokens_used", 0)))
     dollars_used = float(final.get("dollars_used", state.get("dollars_used", 0.0)))
@@ -643,9 +687,19 @@ async def _run_one(client: httpx.AsyncClient, claim: dict[str, Any]) -> None:
         # guard is bypassed (supervisor CLOSE short-circuit, future graph
         # changes), a close over malicious signal cannot reach complete().
         if disposition == "close_fp":
+            from soctalk.core.ir import replay_events
             from soctalk.triage_policy.floor import apply_worker_floor
 
             disposition, floor_vetoes = apply_worker_floor(final, disposition)
+            sink.emit(
+                replay_events.guard_evaluated(
+                    stage="worker_floor",
+                    decision_in="close_fp",
+                    decision_out=disposition,
+                    effect="pass" if not floor_vetoes else "override",
+                    fired=floor_vetoes,
+                )
+            )
             if floor_vetoes:
                 logger.warning(
                     "safety_floor_veto run=%s vetoes=%s close_fp->escalate",
@@ -712,6 +766,9 @@ async def _run_one(client: httpx.AsyncClient, claim: dict[str, Any]) -> None:
         "findings": _verdict_findings(final),
         "enrichments": enrichments_payload,
     }
+    # Final replay flush BEFORE complete: completion clears the lease, and
+    # a post-completion flush would 409 and drop the tail of the journey.
+    await _flush_replay_events(client, run_id, lease_id, sink)
     await _post_complete(client, run_id, complete_payload)
 
 
