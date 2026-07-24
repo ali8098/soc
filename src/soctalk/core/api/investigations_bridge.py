@@ -339,11 +339,20 @@ class TimelineEvent(BaseModel):
     event_type: str
     timestamp: str
     data: dict[str, Any]
+    # Replay/cursor fields (#72). Additive: the legacy timeline ignores them.
+    seq: int | None = None
+    run_id: str | None = None
+    visibility: str | None = None
 
 
 class EventTimelineResponse(BaseModel):
     events: list[TimelineEvent]
     total: int
+    # Replay/cursor envelope (#72). ``server_now`` is the DB clock — the
+    # authority the live head derives its offset from (never the browser's).
+    server_now: str | None = None
+    next_after_seq: int | None = None
+    has_more: bool = False
 
 
 @router.get("/{investigation_id}/events", response_model=EventTimelineResponse)
@@ -351,26 +360,48 @@ async def get_events(
     investigation_id: UUID,
     request: Request,
     limit: int = Query(100, ge=1, le=500),
+    after_seq: int | None = Query(None, ge=0),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
 ) -> EventTimelineResponse:
+    """Event feed, dual-natured (#72): with no cursor it behaves exactly as
+    before (newest-first page for the timeline); with ``after_seq`` it is an
+    ascending cursor feed for replay/live polling — ``next_after_seq`` is
+    the next poll's cursor. RLS owns visibility filtering."""
     identity = current_identity(request)
     if identity is None:
         raise HTTPException(401, "authentication required")
+
+    use_cursor = after_seq is not None
+    effective_order = "asc" if use_cursor else order
 
     db = _db(request)
     rows = (
         await db.execute(
             text(
-                """
-                SELECT event_id, kind, payload, created_at
+                f"""
+                SELECT event_id, kind, payload, created_at, seq, run_id,
+                       visibility, now() AS server_now
                 FROM investigation_events
                 WHERE investigation_id = :c
-                ORDER BY seq DESC
+                  AND (CAST(:after_seq AS BIGINT) IS NULL OR seq > :after_seq)
+                ORDER BY seq {"ASC" if effective_order == "asc" else "DESC"}
                 LIMIT :limit
                 """
             ),
-            {"c": str(investigation_id), "limit": limit},
+            {
+                "c": str(investigation_id),
+                "limit": limit + 1,
+                "after_seq": after_seq,
+            },
         )
     ).mappings().all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    server_now = (
+        rows[0]["server_now"].isoformat()
+        if rows
+        else (await db.execute(text("SELECT now()"))).scalar_one().isoformat()
+    )
     events = [
         TimelineEvent(
             id=str(r["event_id"]),
@@ -378,10 +409,20 @@ async def get_events(
             event_type=r["kind"],
             timestamp=r["created_at"].isoformat(),
             data=dict(r["payload"]) if r["payload"] else {},
+            seq=int(r["seq"]) if r["seq"] is not None else None,
+            run_id=str(r["run_id"]) if r["run_id"] else None,
+            visibility=r["visibility"],
         )
         for r in rows
     ]
-    return EventTimelineResponse(events=events, total=len(events))
+    max_seq = max((e.seq for e in events if e.seq is not None), default=after_seq)
+    return EventTimelineResponse(
+        events=events,
+        total=len(events),
+        server_now=server_now,
+        next_after_seq=max_seq,
+        has_more=has_more,
+    )
 
 
 # ---------------------------------------------------------------------------
