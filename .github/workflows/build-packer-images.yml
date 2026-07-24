@@ -120,6 +120,12 @@ jobs:
           ls -lh build-artifacts/
 
       - name: packer init
+        # Authenticate the plugin getter's GitHub API calls. Without a token it
+        # uses the runner IP's shared 60-req/hr unauthenticated budget, which is
+        # easily exhausted (e.g. several release re-cuts in an hour) and fails
+        # `packer init` with a 403 rate-limit before the build even starts.
+        env:
+          PACKER_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: packer init .
 
       - name: Compute artifact + chart versions

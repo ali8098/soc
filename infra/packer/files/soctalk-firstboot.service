@@ -1,13 +1,15 @@
 [Unit]
 Description=SocTalk first-boot setup (k3s + helm install)
-# Start on a normal boot via multi-user.target. MUST NOT be
-# WantedBy=cloud-init.target: on an OVA deploy with no cloud-init datasource
-# cloud-init disables itself and cloud-init.target never activates, so a unit
-# wanted by it never runs — the helm install would never happen even after the
-# wizard collected config. `After=` here is ordering only (no-op when the named
-# units aren't in the transaction, so no cycle), preserving the wizard-first,
-# cloud-init-first ordering when those are present.
-After=cloud-init.target soctalk-setup-wizard.service network-online.target
+# Start on a normal boot via multi-user.target. Same two constraints as the
+# wizard unit: MUST NOT be WantedBy=cloud-init.target (never starts on a
+# no-datasource OVA deploy) and MUST NOT order After=cloud-init.target while
+# WantedBy=multi-user.target (forms a multi-user ⇄ cloud-init ordering cycle
+# that systemd breaks by deleting this job). We therefore do NOT reference
+# cloud-init.target. Ordering after cloud-init to let a cloud-init-supplied
+# values.yaml land first is NOT needed here: firstboot.sh polls for
+# values.yaml + llm.key itself (from cloud-init OR the wizard) with the unit
+# at TimeoutStartSec=infinity, so it waits regardless of start order.
+After=soctalk-setup-wizard.service network-online.target
 Wants=network-online.target
 ConditionPathExists=!/var/lib/soctalk-firstboot.done
 
