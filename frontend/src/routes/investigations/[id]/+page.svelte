@@ -8,11 +8,15 @@
 	import { m } from '$lib/paraglide/messages';
 	import { localizeHref } from '$lib/i18n';
 	import ChatPanel from '$lib/components/chat/ChatPanel.svelte';
+	import ReplayPanel from '$lib/pipeline-viz/ReplayPanel.svelte';
 
 	let chatOpen = false;
 
 	let investigation: Investigation | null = null;
 	let events: InvestigationTimelineEvent[] = [];
+	// Flight recorder (#72): the right column toggles Timeline | Replay.
+	let eventView: 'timeline' | 'replay' =
+		$page.url.searchParams.get('view') === 'replay' ? 'replay' : 'timeline';
 	let loading = true;
 	let eventsLoading = true;
 	let error: string | null = null;
@@ -538,20 +542,53 @@
 			</div>
 		</div>
 
-		<!-- Right Column: Event Timeline -->
+		<!-- Right Column: Event Timeline / Replay (#72) -->
 		<div class="lg:col-span-2">
 			<div class="card p-4">
 					<div class="flex items-center justify-between mb-4">
-						<h3 class="h4">{m.inv_event_timeline()}</h3>
-						<button class="btn btn-sm variant-soft" on:click={loadEvents} disabled={eventsLoading}>
-							{#if eventsLoading}
-								<span class="inline-block animate-spin rounded-full h-4 w-4 border-b-2 border-current mr-2"></span>
-							{/if}
-							{m.inv_refresh()}
-						</button>
+						<div class="flex items-center gap-3">
+							<h3 class="h4">{m.inv_event_timeline()}</h3>
+							<div class="btn-group variant-soft [&>*+*]:border-surface-500/30" role="tablist">
+								<button
+									type="button"
+									class="btn btn-sm {eventView === 'timeline' ? 'variant-filled-primary' : ''}"
+									role="tab"
+									aria-selected={eventView === 'timeline'}
+									on:click={() => (eventView = 'timeline')}
+									data-testid="view-timeline"
+								>
+									{m.replay_view_timeline()}
+								</button>
+								<button
+									type="button"
+									class="btn btn-sm {eventView === 'replay' ? 'variant-filled-primary' : ''}"
+									role="tab"
+									aria-selected={eventView === 'replay'}
+									on:click={() => (eventView = 'replay')}
+									data-testid="view-replay"
+								>
+									{m.replay_view_replay()}
+								</button>
+							</div>
+						</div>
+						{#if eventView === 'timeline'}
+							<button class="btn btn-sm variant-soft" on:click={loadEvents} disabled={eventsLoading}>
+								{#if eventsLoading}
+									<span class="inline-block animate-spin rounded-full h-4 w-4 border-b-2 border-current mr-2"></span>
+								{/if}
+								{m.inv_refresh()}
+							</button>
+						{/if}
 					</div>
 
-				{#if eventsLoading && events.length === 0}
+				{#if eventView === 'replay'}
+					{#key investigationId}
+						<ReplayPanel
+							{investigationId}
+							isActive={investigation.status === 'in_progress' || investigation.status === 'pending'}
+						/>
+					{/key}
+				{:else if eventsLoading && events.length === 0}
 					<div class="flex items-center justify-center py-8">
 						<div class="animate-spin rounded-full h-8 w-8 border-b-2 border-primary-500"></div>
 					</div>

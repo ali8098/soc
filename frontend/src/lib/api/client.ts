@@ -187,6 +187,10 @@ export interface InvestigationTimelineEvent {
 	event_type: string;
 	timestamp: string;
 	data: Record<string, unknown>;
+	// Replay/cursor fields (#72); absent on older servers.
+	seq?: number | null;
+	run_id?: string | null;
+	visibility?: string | null;
 }
 
 export interface ActionResponse {
@@ -198,6 +202,10 @@ export interface ActionResponse {
 export interface EventTimelineResponse {
 	investigation_id: string;
 	events: InvestigationTimelineEvent[];
+	// Replay/cursor envelope (#72); absent on older servers.
+	server_now?: string | null;
+	next_after_seq?: number | null;
+	has_more?: boolean;
 }
 
 export interface MetricsOverview {
@@ -541,6 +549,18 @@ export const api = {
 			return response.events;
 		},
 
+		// Ascending cursor feed for the flight recorder (#72). Returns the
+		// full envelope: next_after_seq is the next poll's cursor and
+		// server_now is the clock authority for the live head.
+		getEventsCursor: (id: string, afterSeq = 0, limit = 500): Promise<EventTimelineResponse> => {
+			const params = new URLSearchParams({
+				after_seq: String(afterSeq),
+				order: 'asc',
+				limit: String(limit)
+			});
+			return request<EventTimelineResponse>(`/investigations/${id}/events?${params}`);
+		},
+
 		// Pause/resume intentionally omitted: the runs worker has no pause
 		// semantics, so those routes do not exist (issue #16). Cancel is the
 		// only wired lifecycle transition.
@@ -630,6 +650,18 @@ export const api = {
 		summary: (days?: number) => {
 			const query = days ? `?days=${days}` : '';
 			return request<AnalyticsSummary>(`/analytics/summary${query}`);
+		},
+
+		// Fleet-day aggregate for the flight recorder (#72).
+		getFleetDay: (opts?: { date?: string; tz?: string; sampleLimit?: number }) => {
+			const params = new URLSearchParams();
+			if (opts?.date) params.set('date', opts.date);
+			if (opts?.tz) params.set('tz', opts.tz);
+			if (opts?.sampleLimit) params.set('sample_limit', String(opts.sampleLimit));
+			const qs = params.toString();
+			return request<import('$lib/pipeline-viz/types').FleetDay>(
+				`/analytics/fleet-day${qs ? `?${qs}` : ''}`
+			);
 		},
 
 		kpis: (days?: number) => {
