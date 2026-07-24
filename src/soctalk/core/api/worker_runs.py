@@ -607,6 +607,30 @@ async def complete_run(
                     investigation_id=str(investigation_id),
                     veto=floor_veto,
                 )
+            # Replay beat (#72): the server-side floor is the authoritative
+            # last gate — record its ruling (pass AND veto) in the same
+            # transaction that acts on it. The worker cannot emit this one:
+            # it runs after the graph finished.
+            from soctalk.core.ir import replay_events
+            from soctalk.core.ir.events import append_event as _append_ir_event
+
+            _floor_ev = replay_events.guard_evaluated(
+                stage="server_floor",
+                decision_in="close_fp",
+                decision_out=effective_disposition,
+                effect="pass" if floor_veto is None else "override",
+                fired=[floor_veto] if floor_veto else [],
+            )
+            await _append_ir_event(
+                db,
+                tenant_id=tenant_id,
+                investigation_id=investigation_id,
+                run_id=run_id,
+                kind=_floor_ev.kind,
+                payload=_floor_ev.payload,
+                visibility=_floor_ev.visibility,
+                producer="complete_run",
+            )
 
         if payload.status == "completed" and effective_disposition == "close_fp":
             # Write the reopen signature/window alongside the close so an
@@ -671,6 +695,37 @@ async def complete_run(
                     resource_type="investigation",
                     resource_id=str(investigation_id),
                     notes=_json.dumps(triage_policy_audit[:5], default=str)[:4096],
+                )
+            if case_changed:
+                # Replay terminal beat (#72): the ending, recorded by the
+                # plane that decided it, same transaction as the close. Path
+                # taxonomy feeds the fleet-day aggregate.
+                from soctalk.core.ir import replay_events as _re
+
+                _path = (
+                    "operational"
+                    if any(
+                        (a or {}).get("effect") == "deterministic_disposition"
+                        for a in (triage_policy_audit or [])
+                    )
+                    else "reasoning"
+                )
+                _closed_ev = _re.case_closed(
+                    path=_path,
+                    reason=payload.verdict_summary,
+                    run_id=str(run_id),
+                )
+                from soctalk.core.ir.events import append_event as _append_ir_event
+
+                await _append_ir_event(
+                    db,
+                    tenant_id=tenant_id,
+                    investigation_id=investigation_id,
+                    run_id=run_id,
+                    kind=_closed_ev.kind,
+                    payload=_closed_ev.payload,
+                    visibility=_closed_ev.visibility,
+                    producer="complete_run",
                 )
         elif payload.status == "completed" and effective_disposition == "escalate":
             # Event-sourced HIL request: appends the canonical event

@@ -685,9 +685,14 @@ async def auto_close_alert(
     alert_id: UUID,
     reason: str,
     reopen_window_days: int = 30,
+    path: str = "ingest_rules",
 ) -> UUID:
     """Auto-close an alert as a FP. Creates a closed investigation for the audit trail
-    with a reopen signature so future matching events can reopen it."""
+    with a reopen signature so future matching events can reopen it.
+
+    ``path`` is the replay disposition-path taxonomy (#72):
+    ``ingest_memoized`` for memoized closes, ``ingest_rules`` for
+    rules-band closes."""
 
     alert = (
         await db.execute(
@@ -750,6 +755,22 @@ async def auto_close_alert(
         resource_type="investigation",
         resource_id=str(investigation_id),
         notes=reason,
+    )
+
+    # Replay terminal beat (#72): ingest-plane closes never touch the graph,
+    # so the ending is recorded here, same transaction as the row insert.
+    from soctalk.core.ir import replay_events
+
+    closed_ev = replay_events.case_closed(path=path, reason=reason)
+    await append_event(
+        db,
+        tenant_id=tenant_id,
+        investigation_id=investigation_id,
+        run_id=None,
+        kind=closed_ev.kind,
+        payload=closed_ev.payload,
+        visibility=closed_ev.visibility,
+        producer="ingest_triage",
     )
     return investigation_id
 
@@ -1205,6 +1226,7 @@ async def triage_event(
                             db,
                             tenant_id=tenant_id,
                             alert_id=alert_id,
+                            path="ingest_memoized",
                             reason=(
                                 f"memoized-fp: prior verdict close "
                                 f"confidence={memo['confidence']:.2f}{authz_basis}"
@@ -1239,6 +1261,7 @@ async def triage_event(
                 db,
                 tenant_id=tenant_id,
                 alert_id=alert_id,
+                path="ingest_rules",
                 reason=f"auto-close: {assessment} confidence={confidence:.2f}",
                 reopen_window_days=policy.get("reopen_window_days", 30),
             )
