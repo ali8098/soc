@@ -1,12 +1,14 @@
 [Unit]
 Description=SocTalk first-boot setup wizard (collects config, exits)
-# Hook into cloud-init.target (NOT multi-user.target) to:
-#  1) avoid an ordering cycle: WantedBy=multi-user.target +
-#     After=cloud-final.service creates a cycle through cloud-init →
-#     multi-user, which systemd resolves by silently deleting our job.
-#  2) guarantee cloud-init has finished BEFORE we bind :8443, so a
-#     cloud-init-supplied values.yaml lands on disk before our
-#     ConditionPathExists checks evaluate.
+# Start on a normal boot via multi-user.target. This unit MUST NOT be
+# WantedBy=cloud-init.target: on an OVA deploy with no cloud-init datasource
+# (the normal ESXi/vSphere case) cloud-init disables itself, cloud-init.target
+# never activates, and a WantedBy=cloud-init.target unit would never start —
+# the wizard would never bind :8443. `After=cloud-init.target` is ordering
+# ONLY (it has no effect when the target isn't in the transaction, so it can't
+# reintroduce the historical WantedBy=multi-user + After=cloud-final cycle):
+# when cloud-init IS present it still lets a cloud-init-supplied values.yaml
+# land before our ConditionPathExists checks; when it's absent it's a no-op.
 After=cloud-init.target network-online.target
 Wants=network-online.target
 # Skip entirely on any subsequent boot once a sentinel exists OR
@@ -47,4 +49,4 @@ RestrictRealtime=true
 TimeoutStartSec=infinity
 
 [Install]
-WantedBy=cloud-init.target
+WantedBy=multi-user.target

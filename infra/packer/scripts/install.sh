@@ -79,6 +79,31 @@ systemctl enable soctalk-firstboot.service
 cloud-init clean --logs --seed
 
 # ---------------------------------------------------------------------
+# 6b. Ship a hypervisor-agnostic netplan and DON'T rely on cloud-init to
+#     produce one. cloud-init emitted /etc/netplan/50-cloud-init.yaml during
+#     THIS (qemu) build, pinned to the build NIC's MAC + name (ens3 /
+#     52:54:00:12:34:56). `cloud-init clean` does NOT delete it. On a real
+#     OVA deploy to ESXi/vSphere the NIC is ens160 with a VMware MAC and
+#     there is no cloud-init datasource, so cloud-init disables itself and
+#     never regenerates the file — the pinned match fails, the interface
+#     stays DOWN, and the appliance has no network (setup wizard
+#     unreachable). Replace it with a name-glob match that DHCPs whatever
+#     ethernet the hypervisor presents (ens160, ens3, eth0, enp1s0, …).
+rm -f /etc/netplan/50-cloud-init.yaml
+cat > /etc/netplan/50-soctalk-dhcp.yaml <<'NETPLAN'
+network:
+  version: 2
+  ethernets:
+    all-ethernets:
+      match:
+        name: "e*"
+      dhcp4: true
+      dhcp6: false
+      optional: true
+NETPLAN
+chmod 600 /etc/netplan/50-soctalk-dhcp.yaml
+
+# ---------------------------------------------------------------------
 # 7. Final cleanup
 # ---------------------------------------------------------------------
 apt-get autoremove -y

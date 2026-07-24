@@ -1,8 +1,12 @@
 [Unit]
 Description=SocTalk first-boot setup (k3s + helm install)
-# Hook into cloud-init.target (not multi-user.target) to avoid the
-# After=cloud-final.service ⇄ WantedBy=multi-user.target ordering
-# cycle that systemd silently resolves by deleting our job.
+# Start on a normal boot via multi-user.target. MUST NOT be
+# WantedBy=cloud-init.target: on an OVA deploy with no cloud-init datasource
+# cloud-init disables itself and cloud-init.target never activates, so a unit
+# wanted by it never runs — the helm install would never happen even after the
+# wizard collected config. `After=` here is ordering only (no-op when the named
+# units aren't in the transaction, so no cycle), preserving the wizard-first,
+# cloud-init-first ordering when those are present.
 After=cloud-init.target soctalk-setup-wizard.service network-online.target
 Wants=network-online.target
 ConditionPathExists=!/var/lib/soctalk-firstboot.done
@@ -24,4 +28,4 @@ StandardError=journal+console
 TimeoutStartSec=infinity
 
 [Install]
-WantedBy=cloud-init.target
+WantedBy=multi-user.target
