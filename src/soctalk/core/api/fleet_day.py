@@ -82,6 +82,9 @@ async def _guard_veto_count(db: Any, p: dict[str, Any]) -> int:
 
 
 async def _escalated_count(db: Any, p: dict[str, Any]) -> int:
+    # pending_reviews.created_at is a NAIVE timestamp (UTC by convention),
+    # unlike alerts/investigation_events which are timestamptz — normalize
+    # the aware window params in SQL or asyncpg refuses the comparison.
     return int(
         (
             await db.execute(
@@ -90,7 +93,8 @@ async def _escalated_count(db: Any, p: dict[str, Any]) -> int:
                     SELECT COUNT(*)::int AS n
                     FROM pending_reviews
                     WHERE ai_decision = 'escalate'
-                      AND created_at >= :s AND created_at < :e
+                      AND created_at >= (CAST(:s AS timestamptz) AT TIME ZONE 'UTC')
+                      AND created_at <  (CAST(:e AS timestamptz) AT TIME ZONE 'UTC')
                     """
                 ),
                 p,
@@ -218,13 +222,16 @@ async def fleet_live(
     identity = current_identity(request)
     if identity is None:
         raise HTTPException(401, "authentication required")
-    if identity.tenant_id is None:
+    # Tenant-bound users carry tenant_id; pinned MSSP sessions carry the
+    # impersonated tenant in current_tenant. Either scopes the panel.
+    tenant_id = identity.tenant_id or identity.current_tenant
+    if tenant_id is None:
         raise HTTPException(403, "tenant scope required")
 
     _, start, end = _resolve_day_window(tz, None)
 
     sm = get_app_sessionmaker()
-    async with sm() as db, tenant_context(db, identity.tenant_id):
+    async with sm() as db, tenant_context(db, tenant_id):
         p: dict[str, Any] = {"s": start, "e": end}
         server_now = (await db.execute(text("SELECT now()"))).scalar_one()
 
@@ -346,13 +353,16 @@ async def fleet_day(
     identity = current_identity(request)
     if identity is None:
         raise HTTPException(401, "authentication required")
-    if identity.tenant_id is None:
+    # Tenant-bound users carry tenant_id; pinned MSSP sessions carry the
+    # impersonated tenant in current_tenant. Either scopes the panel.
+    tenant_id = identity.tenant_id or identity.current_tenant
+    if tenant_id is None:
         raise HTTPException(403, "tenant scope required")
 
     day, start, end = _resolve_day_window(tz, date)
 
     sm = get_app_sessionmaker()
-    async with sm() as db, tenant_context(db, identity.tenant_id):
+    async with sm() as db, tenant_context(db, tenant_id):
         p: dict[str, Any] = {"s": start, "e": end, "tz": tz}
 
         server_now = (await db.execute(text("SELECT now()"))).scalar_one()
