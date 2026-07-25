@@ -2,7 +2,12 @@
 	import { createEventDispatcher, onMount } from 'svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { buildLut, lutPoint, type PathLut } from './pathLut';
-	import { LAPSE_MS, type FleetScheduleEntry } from './fleetSchedule';
+	import {
+		LAPSE_MS,
+		progressiveExact,
+		scheduleTotals,
+		type FleetScheduleEntry
+	} from './fleetSchedule';
 	import type { FleetDay } from './types';
 
 	export let day: FleetDay;
@@ -65,13 +70,13 @@
 			if (entry.t > t) continue;
 			if (entry.route === 'fast') arrFast++;
 			else if (entry.route === 'reason' || entry.route === 'human') arrMain++;
-			if (entry.t + entry.flight <= t) {
+			if (entry.land <= t) {
 				if (entry.route === 'fast' || entry.route === 'reason') doneClosed++;
 				else if (entry.route === 'human') doneHuman++;
 			} else if (ready) {
 				const lut = luts[entry.route];
 				if (lut) {
-					const frac = (t - entry.t) / entry.flight;
+					const frac = (t - entry.t) / Math.max(1, entry.land - entry.t);
 					const p = lutPoint(lut, frac);
 					active.push({
 						entry,
@@ -90,21 +95,26 @@
 	$: doneClosed = scan.doneClosed;
 	$: doneHuman = scan.doneHuman;
 
-	// Lapse: completed-so-far counts come from the sample, scaled by the
-	// disclosed sample rate — for map fills only; the stat rail shows exact
-	// counters. Live: fills and ribbons use EXACT today-so-far counters.
-	$: scale1 = day.sample_rate > 0 ? 1 / day.sample_rate : 1;
+	// Column labels AND fills share one progressive basis (Codex P1: a
+	// label scaled one way over a fill scaled another can visibly
+	// disagree under sampling): the landed-dot fraction projected onto
+	// the exact day aggregates in lapse mode, the exact today-so-far
+	// counters on the live head.
+	$: totals = scheduleTotals(schedule);
+	$: lapseAtEnd = mode === 'lapse' && t >= LAPSE_MS - 1;
+	$: dayClosedExact =
+		day.closed_ingest_memoized + day.closed_ingest_rules + day.closed_operational + day.closed_reasoning;
+	$: closedLabel = liveCounts
+		? liveCounts.closed
+		: progressiveExact(doneClosed, totals.closed, dayClosedExact, lapseAtEnd);
+	$: humanLabel = liveCounts
+		? liveCounts.escalated
+		: progressiveExact(doneHuman, totals.human, day.escalated, lapseAtEnd);
 
 	const totalDay = () => Math.max(1, liveCounts?.ingested ?? day.ingested);
 	const VESSEL_H = 144;
-	$: closeFillH = Math.min(
-		VESSEL_H,
-		((liveCounts ? liveCounts.closed : doneClosed * scale1) / totalDay()) * VESSEL_H
-	);
-	$: humanFillH = Math.min(
-		VESSEL_H,
-		((liveCounts ? liveCounts.escalated : doneHuman * scale1) / totalDay()) * VESSEL_H
-	);
+	$: closeFillH = Math.min(VESSEL_H, (closedLabel / totalDay()) * VESSEL_H);
+	$: humanFillH = Math.min(VESSEL_H, (humanLabel / totalDay()) * VESSEL_H);
 	const ribWidth = (frac: number) => (frac <= 0 ? 0 : 1.5 + 15 * Math.min(1, frac));
 	$: fastFrac = liveCounts
 		? Math.max(0, liveCounts.closed - liveCounts.reasoning) / totalDay()
@@ -203,14 +213,12 @@
 		<rect class="vtrack" x="962" y="28" width="92" height="152" />
 		<rect class="vfill warn" x="966" y={176 - humanFillH} width="84" height={humanFillH} />
 		<text class="glabel" x="962" y="196">{m.replay_node_human()}</text>
-		<text class="cnt warn" x="1054" y="212" text-anchor="end">{day.escalated}</text>
+		<text class="cnt warn" x="1054" y="212" text-anchor="end">{humanLabel}</text>
 
 		<rect class="vtrack" x="962" y="240" width="92" height="152" />
 		<rect class="vfill good" x="966" y={388 - closeFillH} width="84" height={closeFillH} />
 		<text class="glabel" x="962" y="232">{m.replay_node_close()}</text>
-		<text class="cnt good" x="1054" y="416" text-anchor="end">
-			{day.closed_ingest_memoized + day.closed_ingest_rules + day.closed_operational + day.closed_reasoning}
-		</text>
+		<text class="cnt good" x="1054" y="416" text-anchor="end">{closedLabel}</text>
 
 		<text class="glabel tiny" x="430" y="366">{m.replay_fast_path_label()}</text>
 

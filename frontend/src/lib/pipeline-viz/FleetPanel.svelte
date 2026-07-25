@@ -11,7 +11,10 @@
 	import {
 		buildArrivalEntries,
 		buildFleetSchedule,
+		countsAt,
 		LAPSE_MS,
+		progressiveExact,
+		scheduleTotals,
 		type FleetScheduleEntry
 	} from './fleetSchedule';
 	import { createServerClock } from './serverClock';
@@ -170,11 +173,69 @@
 	$: dayClosed = day
 		? day.closed_ingest_memoized + day.closed_ingest_rules + day.closed_operational + day.closed_reasoning
 		: 0;
-	$: statIngested = mode === 'live' && live ? live.ingested : (day?.ingested ?? 0);
-	$: statClosed = mode === 'live' && live ? liveClosed : dayClosed;
-	$: statEscalated = mode === 'live' && live ? live.escalated : (day?.escalated ?? 0);
-	$: statVetoes = mode === 'live' && live ? live.guard_vetoes : (day?.guard_vetoes ?? 0);
 	$: showLiveHead = mode === 'live' && livePhase === 'head';
+	// Replay and the catch-up cam track the playhead: counters accumulate
+	// as dots land (projected onto the exact aggregates so they end on
+	// the true totals). Only the live head binds to the live snapshot.
+	// Totals are invariant per schedule — keep them out of the per-frame
+	// path (Codex P2).
+	$: totals = scheduleTotals(schedule);
+	$: lapse = day && !showLiveHead ? countsAt(schedule, $timeline.t) : null;
+	$: lapseAtEnd = $timeline.t >= LAPSE_MS - 1;
+	$: statIngested =
+		showLiveHead && live
+			? live.ingested
+			: lapse && day
+				? progressiveExact(lapse.arrived, totals.dots, day.ingested, lapseAtEnd)
+				: (day?.ingested ?? 0);
+	$: statClosed =
+		showLiveHead && live
+			? liveClosed
+			: lapse
+				? progressiveExact(lapse.closed, totals.closed, dayClosed, lapseAtEnd)
+				: dayClosed;
+	$: statEscalated =
+		showLiveHead && live
+			? live.escalated
+			: lapse && day
+				? progressiveExact(lapse.human, totals.human, day.escalated, lapseAtEnd)
+				: (day?.escalated ?? 0);
+	$: statVetoes =
+		showLiveHead && live
+			? live.guard_vetoes
+			: lapse && day
+				? progressiveExact(lapse.vetoes, totals.vetoes, day.guard_vetoes, lapseAtEnd)
+				: (day?.guard_vetoes ?? 0);
+	// The veto rail reveals each ruling when its DOT lands — the same
+	// clock statVetoes ticks on, so a row never appears while the stat
+	// still reads 0 (Codex P2). Rows whose investigation was sampled out
+	// of the dot set (sample_rate < 1 only) fall back to their real
+	// guard-decision time; the stat's projection covers them in aggregate.
+	const vetoLapseT = (d: FleetDay, at: string): number => {
+		const start = Date.parse(d.window_start);
+		const span = Math.max(1, Date.parse(d.window_end) - start);
+		return ((Date.parse(at) - start) / span) * LAPSE_MS;
+	};
+	// Earliest land per investigation: attached alerts give one
+	// investigation several dots, and the row should appear with the
+	// first of them (min, not last-wins).
+	$: vetoLandByInv = (() => {
+		const map = new Map<string, number>();
+		for (const e of schedule) {
+			if (!e.dot.veto || !e.dot.investigation_id) continue;
+			const prev = map.get(e.dot.investigation_id);
+			if (prev === undefined || e.land < prev) map.set(e.dot.investigation_id, e.land);
+		}
+		return map;
+	})();
+	$: visibleVetoes = (() => {
+		const d = day;
+		if (!d) return [];
+		if (!lapse) return d.recent_vetoes;
+		return d.recent_vetoes.filter(
+			(v) => (vetoLandByInv.get(v.investigation_id) ?? vetoLapseT(d, v.at)) <= $timeline.t
+		);
+	})();
 	$: unknownOpen = live?.open_by_stage?.unknown ?? 0;
 </script>
 
@@ -319,11 +380,11 @@
 
 				<div class="card p-4">
 					<h3 class="h5 mb-2">{m.fleet_vetoes_title()}</h3>
-					{#if day.recent_vetoes.length === 0}
+					{#if visibleVetoes.length === 0}
 						<p class="text-sm opacity-60">{m.fleet_none_yet()}</p>
 					{:else}
 						<div class="space-y-2">
-							{#each day.recent_vetoes as veto (veto.investigation_id + veto.at)}
+							{#each visibleVetoes as veto (veto.investigation_id + veto.at)}
 								<button
 									type="button"
 									class="block w-full text-left text-xs font-mono border-b border-surface-500/20 pb-1 hover:opacity-80"
