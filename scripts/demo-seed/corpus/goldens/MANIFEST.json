@@ -1,5 +1,8 @@
 {
-  "source": "/Users/gianlucabrigandi/Development/wa/soctalk-goldens/data_m0",
+  "source_repo": "github.com/soctalk/soctalk-goldens (private)",
+  "source_dataset": "data_m0",
+  "source_commit": "3244d9106e61b74debc5fce2ad10db05059f5506",
+  "license_note": "Generated benchmark data; sourced Wazuh rule descriptions stripped upstream, titles/descriptions re-authored at inject time. Regenerate per soctalk-goldens README.",
   "seed": 72,
   "groups_per_rule": 6,
   "rules": {

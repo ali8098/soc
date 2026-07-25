@@ -362,9 +362,12 @@ def goldens_events(rng: random.Random, n: int) -> list[EventTemplate]:
         rid = str(alert.get("rule", {}).get("id", "5402"))
         t = _tok(rng)
         host = f"g{t}-{alert.get('agent', {}).get('name', 'app-00')}"
+        # The ACTOR is the source user; dstuser is the elevation target
+        # (often root for sudo) and would misname the account in the demo
+        # story (Codex P2). Prefer srcuser.
         user = (
-            (alert.get("data", {}) or {}).get("dstuser")
-            or (alert.get("data", {}) or {}).get("srcuser")
+            (alert.get("data", {}) or {}).get("srcuser")
+            or (alert.get("data", {}) or {}).get("dstuser")
             or "svc-app"
         )
         comp = g.get("components", {})

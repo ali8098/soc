@@ -15,8 +15,15 @@ Routing: the seeder writes a manifest (JSON: script-key → play) before
 injecting; script keys are unique host tokens that appear verbatim in the
 supervisor/verdict prompts. Router calls advance a per-key route counter
 (INVESTIGATE → VERDICT); verdict calls return the authored VerdictDraft.
-Unmatched prompts (organic alerts triaged while the stub is active) get an
-honest generic escalation so nothing silently closes unreviewed.
+
+Unmatched verdict prompts get GENERIC_VERDICT, a benign close whose
+rationale is explicitly marked as playback (so it can never be mistaken
+for real analysis). This is correct on the seeded tenant, where the
+in-cluster worker is scaled to zero and every reasoning call is either
+ours or a reopened benign item. IMPORTANT: this worker is tenant-bound,
+not seed-bound — before starting it against a live tenant, ensure there
+are no pre-existing/organic claimable runs, or it will close them with
+this generic rationale (Codex P1). The bootstrap runbook enforces this.
 
 Run: uvicorn provider:app --port 8091   (manifest path via SEED_MANIFEST)
 """
@@ -54,7 +61,7 @@ GENERIC_VERDICT = {
     "urgency": "routine",
     "key_evidence": ["pattern previously assessed benign; recurrence carries no new indicators"],
     "gaps_in_evidence": ["full command/session context not captured by the decoder"],
-    "assumptions_made": [],
+    "assumptions_made": ["[demo playback] no curated assessment matched this alert shape"],
     "alternative_explanations": ["an operator repeating a routine task"],
     "recommendation": "Close as recurring benign activity; the reopen window continues to guard drift.",
 }
@@ -104,6 +111,15 @@ def _schema_name(body: dict) -> str | None:
     rf = body.get("response_format")
     if isinstance(rf, dict) and rf.get("type") == "json_schema":
         name = (rf.get("json_schema") or {}).get("name")
+        if name:
+            return name
+    # vLLM guided decoding carries the schema in extra_body.structured_outputs
+    # (not response_format) — support it so a tier that resolves engine=vllm
+    # is still served rather than falling to the plain-completion branch.
+    eb = body.get("extra_body") or {}
+    so = eb.get("structured_outputs") if isinstance(eb, dict) else None
+    if isinstance(so, dict):
+        name = (so.get("json") or {}).get("title") or so.get("name")
         if name:
             return name
     tools = body.get("tools") or []

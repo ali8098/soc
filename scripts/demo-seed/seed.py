@@ -160,7 +160,11 @@ def write_manifest(plan: list[dict], path: Path) -> int:
         ev: EventTemplate = p["template"]
         if ev.script:
             manifest[ev.script["key"]] = {k: v for k, v in ev.script.items() if k != "key"}
-    path.write_text(json.dumps(manifest, indent=1))
+    # Atomic publish: the provider hot-reloads by mtime and cannot read a
+    # half-written file (Codex P1). Write to a temp sibling + os.replace.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(manifest, indent=1))
+    os.replace(tmp, path)
     return len(manifest)
 
 
@@ -185,6 +189,9 @@ def to_adapter_event(p: dict) -> dict:
 
 
 def cmd_run(args: argparse.Namespace) -> None:
+    if args.batch_size > 500:
+        raise SystemExit("--batch-size must be <= 500 (adapter wire cap)")
+
     plan = build_plan(args)
     by_family: dict[str, int] = {}
     for p in plan:

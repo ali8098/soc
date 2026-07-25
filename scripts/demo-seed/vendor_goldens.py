@@ -82,13 +82,35 @@ def main() -> None:
         (OUT / name).write_text(body)
         manifests[name] = hashlib.sha256(body.encode()).hexdigest()
 
+    # Provenance: record the source COMMIT (not a developer-local absolute
+    # path) so the snapshot is reproducible and license-traceable. Sourced
+    # rule descriptions are stripped upstream and re-authored at inject time.
+    src_commit = "unknown"
+    try:
+        import subprocess
+
+        src_commit = subprocess.check_output(
+            ["git", "-C", str(args.src.parent), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except Exception:
+        pass
+
     (OUT / "SHA256SUMS").write_text(
         "".join(f"{h}  {n}\n" for n, h in sorted(manifests.items()))
     )
     (OUT / "MANIFEST.json").write_text(
         json.dumps(
             {
-                "source": str(args.src),
+                "source_repo": "github.com/soctalk/soctalk-goldens (private)",
+                "source_dataset": args.src.name,
+                "source_commit": src_commit,
+                "license_note": (
+                    "Generated benchmark data; sourced Wazuh rule descriptions "
+                    "stripped upstream, titles/descriptions re-authored at inject "
+                    "time. Regenerate per soctalk-goldens README."
+                ),
                 "seed": args.seed,
                 "groups_per_rule": GROUPS_PER_RULE,
                 "rules": {r: len(g) for r, g in sorted(groups_by_rule.items())},

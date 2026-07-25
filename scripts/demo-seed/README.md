@@ -49,26 +49,45 @@ output.
 
 ## Demo box runbook (demo.soctalk.ai)
 
+Order matters: seed FIRST, then start the worker (the worker is
+tenant-bound, not seed-bound — starting it before injection risks it
+claiming pre-existing organic runs).
+
 0. **Backup first — non-negotiable**:
    `ssh root@demo.soctalk.ai "kubectl exec -n soctalk-system soctalk-system-postgres-0 -- pg_dump -U soctalk_admin -d soctalk --clean --if-exists | gzip -9 > /root/soctalk-demo-backup-$(date -u +%Y%m%dT%H%M%SZ).sql.gz"`
    and copy it off-box (kept in `~/Development/wa/soctalk-backups/`).
    **Rollback**: `gunzip -c <backup>.sql.gz | ssh root@demo.soctalk.ai "kubectl exec -i -n soctalk-system soctalk-system-postgres-0 -- psql -U soctalk_admin -d soctalk"`.
 1. Scale the in-cluster worker down (its env points at real LLMs):
    `kubectl scale deploy/soctalk-runs-worker -n tenant-demo --replicas=0`.
-2. SSH-tunnel the API service:
+2. **No-organic-runs gate** (Codex P1): our worker would close any
+   pre-existing claimable run with a generic benign rationale. Confirm
+   none exist for the demo tenant BEFORE starting it:
+   `kubectl exec -n soctalk-system soctalk-system-postgres-0 -- psql -U soctalk_admin -d soctalk -c "SELECT count(*) FROM investigation_runs WHERE status='active';"`
+   — must be 0 after the seed injects (see step 6). If organic active
+   investigations exist on this tenant, do not proceed.
+3. SSH-tunnel the API service:
    `ssh -L 8000:$(kubectl get svc -n soctalk-system soctalk-system-api -o jsonpath='{.spec.clusterIP}'):8000 root@demo.soctalk.ai`
    (adjust svc name/port to the chart).
-3. Mint adapter + worker tokens with the install signing key
+4. Mint adapter + worker tokens with the install signing key
    (`kubectl get secret` in soctalk-system; `mint_adapter_token`/`mint_worker_token`).
-4. Start `provider.py` locally; start a LOCAL runs-worker as in the
-   rehearsal (keys-free env; `SOCTALK_API_URL=http://127.0.0.1:8000`).
-5. `seed.py run ... --api http://127.0.0.1:8000`; watch the worker drain;
-   `seed.py verify ...`; spot-check the UI.
-6. Stop the local worker + provider; scale the in-cluster worker back:
+5. Start `provider.py` locally (port 8091).
+6. `seed.py run ... --api http://127.0.0.1:8000` — injects alerts + facts
+   and publishes the manifest atomically. This creates the promoted runs.
+7. Start the cost-safe worker via the launcher (scrubbed env + preflight
+   that ABORTS unless every resolved tier points at the stub):
+   `STUB=http://127.0.0.1:8091/v1 API=http://127.0.0.1:8000
+   WORKER_TOKEN=/tmp/seed-worker-token scripts/demo-seed/run_worker.sh`
+   Watch it drain; then `seed.py verify ...`; spot-check the UI.
+8. Stop the local worker + provider; scale the in-cluster worker back:
    `kubectl scale deploy/soctalk-runs-worker -n tenant-demo --replicas=1`.
 
-Cost guarantee: the local worker's environment contains no Anthropic key
-and no Modal URL — a misroute fails loudly instead of billing quietly.
+Cost guarantee (Codex-hardened): `run_worker.sh` starts the worker under
+`env -i` with ONLY the stub vars, sets `ANTHROPIC_API_KEY=` empty, and runs
+`preflight.py` which resolves every tier through the product's own config
+loader and refuses to launch unless each one's base URL is the stub — so a
+leaked per-tier var (`SOCTALK_FAST_BASE_URL=…modal…`, `SOCTALK_REASONING_
+API_KEY=sk-ant-…`) cannot route a paid call. Stub-unreachable fails closed
+(the run is marked failed), never falling back to a real provider.
 
 ## Validated distribution (local, seed=1, --noise 200)
 
