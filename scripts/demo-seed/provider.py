@@ -8,8 +8,10 @@ langchain_openai's function_calling path):
 - POST /v1/chat/completions with tools + forced tool_choice
   (SupervisorDecision | ConstrainedSupervisorDecision | VerdictDraft)
 - response: assistant message with tool_calls[0].function.{name,arguments}
-  echoing the forced tool name, finish_reason="tool_calls", plus usage
-  fields (prompt_tokens/completion_tokens) so budget tracking sees spend.
+  echoing the forced tool name, finish_reason="tool_calls". Usage is
+  reported as ZERO: playback is not inference, and fake usage gets priced
+  by the real cost governor (it tripped the demo box's $15/day tenant cap
+  and froze run claims mid-drain).
 
 Routing: the seeder writes a manifest (JSON: script-key → play) before
 injecting; script keys are unique host tokens that appear verbatim in the
@@ -156,10 +158,14 @@ def _tool_response(model: str, tool_name: str, args: dict, prompt_len: int) -> d
                 },
             }
         ],
+        # Zero usage: playback is not inference. Non-zero fake usage gets
+        # priced by the real cost governor and can trip the tenant daily
+        # spend circuit breaker (observed on the demo box: $15 cap hit by
+        # phantom spend, claims frozen mid-drain).
         "usage": {
-            "prompt_tokens": max(1, prompt_len // 4),
-            "completion_tokens": max(1, len(completion) // 4),
-            "total_tokens": max(2, prompt_len // 4 + len(completion) // 4),
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
         },
     }
 
@@ -226,8 +232,8 @@ async def chat(request: Request) -> dict:
             }
         ],
         "usage": {
-            "prompt_tokens": max(1, len(text) // 4),
-            "completion_tokens": 2,
-            "total_tokens": max(3, len(text) // 4 + 2),
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
         },
     }
