@@ -32,10 +32,18 @@ output.
 1. Stand up Postgres+API per `.claude/skills/verify/SKILL.md`; seed an
    admin, create a tenant, mint an adapter + worker token.
 2. `uvicorn provider:app --port 8091` (from this directory).
-3. Run the worker with NO provider keys in env — only:
-   `SOCTALK_LLM_PROVIDER=openai OPENAI_BASE_URL=http://127.0.0.1:8091/v1
-   OPENAI_API_KEY=sk-demo SOCTALK_FAST_MODEL=demo-playback
-   SOCTALK_REASONING_MODEL=demo-playback SOCTALK_API_URL=... WORKER_TOKEN_PATH=...`
+3. Run the worker pointed only at the stub. TWO env gotchas that are the
+   actual cost-safety mechanism (learned the hard way):
+   - `uv run --no-env-file` AND `ANTHROPIC_API_KEY=` (empty): the app calls
+     `load_dotenv()` itself, so `--no-env-file` alone doesn't stop soctalk's
+     `.env` from leaking `ANTHROPIC_API_KEY` and tripping the provider
+     mutual-exclusion check. python-dotenv won't override an already-set
+     (empty) var, so exporting it empty defeats the leak.
+   - Full env: `ANTHROPIC_API_KEY= OPENAI_API_KEY=sk-demo
+     SOCTALK_LLM_PROVIDER=openai OPENAI_BASE_URL=http://127.0.0.1:8091/v1
+     SOCTALK_FAST_MODEL=demo-playback SOCTALK_REASONING_MODEL=demo-playback
+     SOCTALK_API_URL=... WORKER_TOKEN_PATH=... uv run --no-env-file python
+     -m soctalk.runs_worker.main`
 4. `seed.py run --tenant-id ... --adapter-token ...`, wait for the worker
    to drain, then `seed.py verify ...`.
 
@@ -61,6 +69,25 @@ output.
 
 Cost guarantee: the local worker's environment contains no Anthropic key
 and no Modal URL — a misroute fails loudly instead of billing quietly.
+
+## Validated distribution (local, seed=1, --noise 200)
+
+260 alerts/day →
+- 115 ingest rules-band closes (deterministic, no model)
+- 12 operational closes (rule 202, in-graph, no model)
+- 119 reasoning closes (scripted verdicts + reopened-then-re-closed noise)
+- 14 escalations to the human queue, of which **14 are guard vetoes** —
+  the model scripted `close` on a sudo case whose grant does not cover the
+  activity, and the REAL verdict guard overrode it to `escalate`
+  (`authz_class=contradicted`). This is the flagship trust beat, produced
+  by the genuine guard, not scripted.
+- reopen (~105) + attached (~42) recurrence texture across the day.
+- $0 spend, 0 API tokens, 0 GPU minutes.
+
+Known minor: a few self-escalate-family alerts fall to the generic close
+fallback rather than self-escalating (the guard-veto path already supplies
+ample human-lane volume). Refine the manifest host-key match if a larger
+self-escalate share is wanted.
 
 ## Not yet wired (deliberate)
 

@@ -26,8 +26,15 @@ from pathlib import Path
 
 CORPUS_DIR = Path(__file__).parent / "corpus"
 
-HOSTS_NOISE = ["web-01", "web-02", "app-07", "app-12", "build-03", "bastion-01", "db-04"]
-USERS_NOISE = ["deploy", "svc-backup", "ansible", "jenkins", "www-data", "monitor"]
+# A realistic fleet: enough hosts that same-rule noise events rarely collide
+# on (rule_id, asset, 5-min bucket) — otherwise the adapter coalesces/reopens
+# them into a handful of churning investigations instead of distinct closes.
+_ROLES = ["web", "app", "api", "db", "cache", "queue", "build", "ci", "bastion", "edge"]
+HOSTS_NOISE = [f"{r}-{i:02d}" for r in _ROLES for i in range(1, 7)]  # 60 hosts
+USERS_NOISE = [
+    "deploy", "svc-backup", "ansible", "jenkins", "www-data", "monitor",
+    "gitlab-runner", "prometheus", "svc-etl", "packer", "terraform", "cron",
+]
 EXT_IPS = ["203.0.113.40", "198.51.100.23", "203.0.113.77", "192.0.2.146", "198.51.100.9"]
 INT_IPS = ["10.20.8.14", "10.20.9.3", "172.16.4.9", "10.20.11.25"]
 
@@ -42,6 +49,7 @@ class EventTemplate:
     rule_groups: list[str] = field(default_factory=list)
     mitre: dict | None = None
     entities: list[dict] = field(default_factory=list)
+    assets: list[str] = field(default_factory=list)
     iocs: list[dict] = field(default_factory=list)
     template_hash: str | None = None
     # For promotable families: the scripted-provider play to register.
@@ -53,41 +61,36 @@ class EventTemplate:
 # ---------------------------------------------------------------------------
 
 
+# A realistic spread of benign, low-severity Wazuh rule IDs. Diversity here
+# governs how many DISTINCT closed investigations the day produces: reopen
+# matches any-of (asset|ioc|rule) within the 30d window, so recurrence of a
+# rule reopens its first close (real product behavior — the flight recorder
+# shows the REOPENED beat). More rules → more distinct closes, fewer reopens.
 def noise_events(rng: random.Random, n: int) -> list[EventTemplate]:
     """High-volume benign noise that the ingest plane closes itself."""
     shapes = [
-        (
-            "5501",
-            "PAM: login session opened",
-            "pam session opened for user {user} on {host}",
-            ["pam", "syslog"],
-        ),
-        (
-            "5502",
-            "PAM: login session closed",
-            "pam session closed for user {user} on {host}",
-            ["pam", "syslog"],
-        ),
-        (
-            "2902",
-            "New dpkg (Debian package) installed",
-            "package {pkg} installed on {host}",
-            ["syslog", "dpkg"],
-        ),
-        (
-            "530",
-            "OSSEC process list checksum changed",
-            "periodic process inventory delta on {host}",
-            ["ossec"],
-        ),
-        (
-            "5901",
-            "New group added to the system",
-            "group ci-runners refreshed on {host}",
-            ["syslog"],
-        ),
+        ("5501", "PAM: login session opened", "pam session opened for user {user} on {host}", ["pam", "syslog"]),
+        ("5502", "PAM: login session closed", "pam session closed for user {user} on {host}", ["pam", "syslog"]),
+        ("2902", "New dpkg (Debian package) installed", "package {pkg} installed on {host}", ["syslog", "dpkg"]),
+        ("2903", "Dpkg (Debian package) removed", "package {pkg} removed on {host}", ["syslog", "dpkg"]),
+        ("530", "OSSEC process list checksum changed", "periodic process inventory delta on {host}", ["ossec"]),
+        ("531", "Disk usage checked", "disk usage report collected on {host}", ["ossec"]),
+        ("5901", "New group added to the system", "group ci-runners refreshed on {host}", ["syslog"]),
+        ("5902", "New user added to the system", "service account {user} provisioned on {host}", ["syslog"]),
+        ("2501", "Syslog daemon restarted", "rsyslog reloaded on {host}", ["syslog"]),
+        ("1002", "Unknown problem somewhere in the system", "low-signal anomaly on {host}", ["syslog"]),
+        ("510", "Host-based anomaly detection (rootcheck)", "rootcheck scan completed on {host}", ["ossec", "rootcheck"]),
+        ("591", "Log file rotated", "logrotate ran for {pkg} on {host}", ["syslog"]),
+        ("2932", "Yum package updated", "package {pkg} updated on {host}", ["syslog", "yum"]),
+        ("5301", "User authentication failure (single)", "one failed password for {user} on {host}", ["pam", "syslog"]),
+        ("5715", "sshd authentication success", "accepted key for {user} on {host}", ["sshd", "syslog"]),
+        ("2503", "SSHD server restarted", "sshd reloaded on {host}", ["sshd", "syslog"]),
+        ("580", "FIM directory scan completed", "syscheck baseline scan finished on {host}", ["syscheck"]),
+        ("533", "Listened ports status changed", "open-port inventory delta on {host}", ["ossec"]),
+        ("5401", "sudo session opened for cron", "cron opened a sudo session on {host}", ["syslog", "sudo"]),
+        ("2951", "APT cache cleaned", "apt autoclean ran on {host}", ["syslog"]),
     ]
-    pkgs = ["curl", "openssl", "libssl3", "tzdata", "ca-certificates"]
+    pkgs = ["curl", "openssl", "libssl3", "tzdata", "ca-certificates", "nginx", "python3", "containerd"]
     out = []
     for i in range(n):
         rid, title, desc, groups = shapes[rng.randrange(len(shapes))]
@@ -101,10 +104,7 @@ def noise_events(rng: random.Random, n: int) -> list[EventTemplate]:
                 title=title,
                 description=desc.format(user=user, host=host, pkg=rng.choice(pkgs)),
                 rule_groups=groups,
-                entities=[
-                    {"type": "host", "value": host, "role": "target"},
-                    {"type": "user", "value": user, "role": "actor"},
-                ],
+                assets=[host],
                 template_hash=f"tpl-{rid}",
             )
         )
@@ -116,7 +116,7 @@ def operational_events(rng: random.Random, n: int) -> list[EventTemplate]:
     (rule 202, agent_flooding/agent_buffer, no MITRE/IOCs)."""
     out = []
     for i in range(n):
-        host = HOSTS_NOISE[rng.randrange(len(HOSTS_NOISE))]
+        host = f"edge-agent-{rng.randrange(1, 30):02d}"
         flavor = rng.choice(
             [
                 ("Agent event queue is flooded", "agent_flooding"),
@@ -131,7 +131,7 @@ def operational_events(rng: random.Random, n: int) -> list[EventTemplate]:
                 title=f"{flavor[0]} on {host}",
                 description=f"wazuh agent on {host}: {flavor[0].lower()}; events may be dropped until the queue drains",
                 rule_groups=["wazuh", flavor[1]],
-                entities=[{"type": "host", "value": host, "role": "target"}],
+                assets=[host],
                 template_hash="tpl-202",
             )
         )
@@ -154,10 +154,8 @@ def webscan_events(rng: random.Random, n: int) -> list[EventTemplate]:
                 title=f"Web server 400 error code ({host})",
                 description=f"multiple 4xx responses to probing requests from {ip} against {host}",
                 rule_groups=["web", "accesslog"],
-                entities=[
-                    {"type": "host", "value": host, "role": "target"},
-                    {"type": "ip", "value": ip, "role": "src"},
-                ],
+                assets=[host],
+                entities=[{"type": "ip", "value": ip, "role": "src"}],
                 template_hash="tpl-31101",
             )
         )

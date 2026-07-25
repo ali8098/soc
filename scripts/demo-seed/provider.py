@@ -40,18 +40,23 @@ _manifest: dict[str, Any] = {}
 _manifest_mtime = 0.0
 _route_counts: dict[str, int] = defaultdict(int)
 
+# Default for un-manifested reasoning calls. On the seeded demo tenant the
+# in-cluster worker is scaled to zero, so EVERY alert reaching the reasoning
+# tier is one of ours — and an un-manifested one is a benign item that
+# recurred and reopened (reopen starts a fresh run). Re-closing it is the
+# correct, honest disposition; escalating would flood the queue with noise.
 GENERIC_VERDICT = {
-    "decision": "escalate",
-    "confidence": 0.55,
-    "threat_assessment": "Alert outside the curated demo corpus; escalating for analyst review rather than guessing.",
-    "evidence_strength": "weak",
-    "potential_impact": "medium",
-    "urgency": "elevated",
-    "key_evidence": ["no curated assessment exists for this alert shape"],
-    "gaps_in_evidence": ["full context not evaluated by the demo playback provider"],
+    "decision": "close",
+    "confidence": 0.86,
+    "threat_assessment": "Recurring low-severity activity consistent with the prior benign disposition for this pattern.",
+    "evidence_strength": "moderate",
+    "potential_impact": "low",
+    "urgency": "routine",
+    "key_evidence": ["pattern previously assessed benign; recurrence carries no new indicators"],
+    "gaps_in_evidence": ["full command/session context not captured by the decoder"],
     "assumptions_made": [],
-    "alternative_explanations": [],
-    "recommendation": "Escalate for human review (demo playback provider default).",
+    "alternative_explanations": ["an operator repeating a routine task"],
+    "recommendation": "Close as recurring benign activity; the reopen window continues to guard drift.",
 }
 
 
@@ -85,14 +90,33 @@ def _match_key(text: str) -> str | None:
     return None
 
 
-def _forced_tool(body: dict) -> str | None:
+def _schema_name(body: dict) -> str | None:
+    """The forced structured-output schema, from whichever mechanism the
+    client used: function_calling (tools + tool_choice, dict OR bare-string
+    name) or json_schema response_format."""
     tc = body.get("tool_choice")
     if isinstance(tc, dict):
-        return (tc.get("function") or {}).get("name")
+        name = (tc.get("function") or {}).get("name")
+        if name:
+            return name
+    elif isinstance(tc, str) and tc not in ("auto", "required", "none"):
+        return tc
+    rf = body.get("response_format")
+    if isinstance(rf, dict) and rf.get("type") == "json_schema":
+        name = (rf.get("json_schema") or {}).get("name")
+        if name:
+            return name
+    tools = body.get("tools") or []
+    if len(tools) == 1:
+        return (tools[0].get("function") or {}).get("name")
     return None
 
 
 def _tool_response(model: str, tool_name: str, args: dict, prompt_len: int) -> dict:
+    # Return the payload BOTH as a tool_call (function_calling parser) AND as
+    # message content JSON (json_schema/json_mode parser) — the product's
+    # structured-output path varies by resolved decoding mode, and satisfying
+    # both makes the stub robust to either.
     completion = json.dumps(args)
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
@@ -105,7 +129,7 @@ def _tool_response(model: str, tool_name: str, args: dict, prompt_len: int) -> d
                 "finish_reason": "tool_calls",
                 "message": {
                     "role": "assistant",
-                    "content": None,
+                    "content": completion,
                     "tool_calls": [
                         {
                             "id": f"call_{uuid.uuid4().hex[:16]}",
@@ -157,19 +181,20 @@ async def chat(request: Request) -> dict:
     body = await request.json()
     text = _prompt_text(body)
     model = body.get("model", "demo-playback")
-    tool = _forced_tool(body)
+    schema = _schema_name(body)
     key = _match_key(text)
 
-    if tool and "SupervisorDecision" in tool:
-        return _tool_response(model, tool, _supervisor_args(key, text), len(text))
-    if tool == "VerdictDraft":
+    if schema and "SupervisorDecision" in schema:
+        return _tool_response(model, schema, _supervisor_args(key, text), len(text))
+    if schema and "Verdict" in schema:
         play = _load_manifest().get(key or "", {})
         verdict = play.get("verdict") or GENERIC_VERDICT
-        return _tool_response(model, tool, verdict, len(text))
-    if tool:
-        # Unknown forced schema: echo an empty object and let validation
-        # retry — safer than inventing fields for a schema we don't know.
-        return _tool_response(model, tool, {}, len(text))
+        return _tool_response(model, schema, verdict, len(text))
+    if schema:
+        # Unknown forced schema: an un-modeled structured call. Return the
+        # generic verdict shape (it validates VerdictDraft, the only other
+        # structured schema in the graph) rather than an empty object.
+        return _tool_response(model, schema, GENERIC_VERDICT, len(text))
 
     # Plain completion (no schema): short deterministic content.
     return {

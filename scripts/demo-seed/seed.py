@@ -86,7 +86,7 @@ def build_plan(args: argparse.Namespace) -> list[dict]:
     for i, ev in enumerate(events):
         if ev.family == "webscan":
             # Cluster each burst's events within ~4 minutes of its anchor.
-            anchor_key = ev.entities[1]["value"]  # burst source ip
+            anchor_key = next(e["value"] for e in ev.entities if e["type"] == "ip")
             anchor = burst_anchor.setdefault(anchor_key, draw_ts())
             ts = anchor + timedelta(seconds=rng.uniform(0, 240))
         else:
@@ -171,7 +171,7 @@ def to_adapter_event(p: dict) -> dict:
         "source": "wazuh",
         "rule_id": ev.rule_id,
         "severity": ev.severity,
-        "asset_ids": [e["value"] for e in ev.entities if e["type"] == "host"],
+        "asset_ids": ev.assets or [e["value"] for e in ev.entities if e["type"] == "host"],
         "initial_iocs": ev.iocs,
         "ts": p["ts"],
         "title": ev.title,
