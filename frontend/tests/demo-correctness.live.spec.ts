@@ -23,25 +23,56 @@ test.describe.configure({ mode: 'serial' });
 test.use({ viewport: { width: 1440, height: 960 }, timezoneId: TZ });
 
 // ---------------------------------------------------------------------------
-// Plan #1: read-only tripwire + runtime oracles
+// Plan #1 (pervasive form): unified guards armed on EVERY page — a
+// mutation tripwire (read-only guarantee), uncaught-page-error capture,
+// and failing-API-response capture. Asserted automatically after each
+// test via the afterEach hook below.
 // ---------------------------------------------------------------------------
 
 const MUTATION_ALLOWLIST = [/\/api\/auth\/login$/, /\/api\/auth\/assume-tenant$/];
 
-function armMutationTripwire(page: Page): { violations: string[] } {
-	const state = { violations: [] as string[] };
+interface Guards {
+	mutations: string[];
+	pageErrors: string[];
+	badApi: string[];
+}
+
+function armGuards(page: Page): Guards {
+	const existing = (page as unknown as { __guards?: Guards }).__guards;
+	if (existing) return existing;
+	const g: Guards = { mutations: [], pageErrors: [], badApi: [] };
+	(page as unknown as { __guards?: Guards }).__guards = g;
 	page.on('request', (req) => {
 		const m = req.method();
 		if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return;
 		const url = req.url();
 		if (!url.includes('/api/')) return;
 		if (MUTATION_ALLOWLIST.some((rx) => rx.test(url.split('?')[0]))) return;
-		state.violations.push(`${m} ${url}`);
+		g.mutations.push(`${m} ${url}`);
 	});
-	return state;
+	page.on('pageerror', (err) => g.pageErrors.push(String(err)));
+	page.on('response', (r) => {
+		if (!r.url().includes('/api/')) return;
+		const s = r.status();
+		// The pre-login session probe answers 401 by design.
+		if (s === 401 && r.url().includes('/api/auth/me')) return;
+		// 401/403 and 5xx are always wrong for a logged-in read-only
+		// session; 404/409/422 may be legitimate optional probes.
+		if (s === 401 || s === 403 || s >= 500) g.badApi.push(`${s} ${r.url()}`);
+	});
+	return g;
 }
 
+test.afterEach(async ({ page }) => {
+	const g = (page as unknown as { __guards?: Guards }).__guards;
+	if (!g) return;
+	expect(g.mutations, 'READ-ONLY VIOLATION: mutating API calls fired').toEqual([]);
+	expect(g.badApi, 'auth/server errors from UI API calls').toEqual([]);
+	expect(g.pageErrors, 'uncaught page errors').toEqual([]);
+});
+
 async function login(page: Page) {
+	armGuards(page);
 	await page.goto('/login');
 	await page.locator('input[type=email]').fill(EMAIL);
 	await page.locator('input[type=password]').fill(PASSWORD);
@@ -167,14 +198,12 @@ function cumulativeAt(day: FleetDay, tMs: number) {
 // ===========================================================================
 
 test('plan 2: auth + tenant-pinned session survives reload', async ({ page }) => {
-	const trip = armMutationTripwire(page);
 	await login(page);
 	await expect(page.getByText(EMAIL)).toBeVisible({ timeout: 10000 });
 	await expect(page.getByText('Tenant: Demo Tenant')).toBeVisible();
 	await page.reload();
 	await expect(page.getByText(EMAIL)).toBeVisible({ timeout: 15000 });
 	expect(page.url()).not.toContain('/login');
-	expect(trip.violations).toEqual([]);
 });
 
 test('plan 3+17: fleet-day internal consistency + tz day window', async ({ page }) => {
@@ -220,7 +249,6 @@ test('plan 3+17: fleet-day internal consistency + tz day window', async ({ page 
 test('plan 4+18: dashboard live head matches fleet-live; no 4xx from UI fleet calls', async ({
 	page
 }) => {
-	const trip = armMutationTripwire(page);
 	const fleetResponses: { url: string; status: number }[] = [];
 	page.on('response', (r) => {
 		if (r.url().includes('/api/analytics/fleet-')) {
@@ -258,7 +286,6 @@ test('plan 4+18: dashboard live head matches fleet-live; no 4xx from UI fleet ca
 	expect(fleetResponses.length).toBeGreaterThan(0);
 	const bad = fleetResponses.filter((r) => r.status !== 200);
 	expect(bad, 'non-200 fleet responses from the UI').toEqual([]);
-	expect(trip.violations).toEqual([]);
 });
 
 test('plan 6+19: replay counters start from cumulative-at-playhead, not final totals', async ({
@@ -365,7 +392,6 @@ test('plan 10: veto rail reveals with the playhead and lists real rulings', asyn
 });
 
 test('plan 11: drill-down — veto rail row opens that investigation in replay', async ({ page }) => {
-	const trip = armMutationTripwire(page);
 	await login(page);
 	await page.goto('/analytics');
 	await expect(page.getByTestId('fleet-panel')).toBeVisible({ timeout: 20000 });
@@ -379,7 +405,6 @@ test('plan 11: drill-down — veto rail row opens that investigation in replay',
 	expect(page.url()).toContain(target);
 	expect(page.url()).toContain('view=replay');
 	await expect(page.getByTestId('pipeline-map')).toBeVisible({ timeout: 25000 });
-	expect(trip.violations).toEqual([]);
 });
 
 test('plan 12+13: replay beats and verdict/guard integrity vs the events API', async ({ page }) => {
@@ -492,4 +517,192 @@ test('plan 20: fixture health — the demo day is populated and replayable', asy
 	).toBeGreaterThan(0);
 	expect(closedOf(day), 'no pipeline closes on the demo day').toBeGreaterThan(0);
 	expect(day.escalated, 'no human-lane volume on the demo day').toBeGreaterThan(0);
+});
+
+// ===========================================================================
+// Pervasive extensions: whole-app sweep, interaction depth, i18n.
+// ===========================================================================
+
+test('sweep: every sidebar route renders clean (no error state, no auth bounce)', async ({
+	page
+}) => {
+	test.setTimeout(240_000);
+	await login(page);
+	await page.goto('/');
+	const links = page.locator('aside a[href], [role="complementary"] a[href]');
+	await expect(links.first()).toBeVisible({ timeout: 15000 });
+	const hrefs = new Set<string>();
+	for (let i = 0; i < (await links.count()); i++) {
+		const href = await links.nth(i).getAttribute('href');
+		if (href && href.startsWith('/') && !href.startsWith('/logout')) hrefs.add(href);
+	}
+	expect(hrefs.size, 'sidebar navigation links found').toBeGreaterThanOrEqual(5);
+
+	for (const href of hrefs) {
+		await page.goto(href);
+		await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+		expect(page.url(), `${href} bounced to login`).not.toContain('/login');
+		// No hard error surface rendered.
+		const errAlert = page.locator('.alert.variant-soft-error, [data-testid="page-error"]');
+		expect(await errAlert.count(), `${href} shows an error alert`).toBe(0);
+		// The page produced content beyond the shell.
+		const main = page.locator('main, [role="main"], .container, article').first();
+		expect(
+			((await main.textContent().catch(() => '')) ?? '').trim().length,
+			`${href} rendered empty`
+		).toBeGreaterThan(0);
+	}
+	// Guards (mutations / 401/403/5xx / pageerrors) asserted in afterEach —
+	// this sweep is precisely where they bite hardest.
+});
+
+test('dashboard fleet mode toggle: Live <-> Replay both operate', async ({ page }) => {
+	await login(page);
+	await page.goto('/');
+	await expect(page.getByTestId('fleet-panel')).toBeVisible({ timeout: 20000 });
+	await expect(page.getByTestId('fleet-live-chip')).toBeVisible({ timeout: 30000 });
+	await page.getByTestId('fleet-mode-replay').click();
+	await expect(page.getByTestId('fleet-play')).toBeVisible({ timeout: 10000 });
+	await expect(page.getByTestId('fleet-live-chip')).toBeHidden();
+	await page.getByTestId('fleet-play').click(); // film runs on the dashboard too
+	await page.waitForTimeout(1500);
+	await page.getByTestId('fleet-mode-live').click();
+	await expect(page.getByTestId('fleet-live-chip')).toBeVisible({ timeout: 30000 });
+});
+
+test('drill-down from the map itself: clicking a dot opens its replay', async ({ page }) => {
+	await login(page);
+	await page.goto('/analytics');
+	await expect(page.getByTestId('fleet-panel')).toBeVisible({ timeout: 20000 });
+	// Run the film briefly, then pause so dots freeze mid-flight.
+	await page.getByTestId('fleet-play').click();
+	await page.waitForTimeout(2500);
+	await page.getByTestId('fleet-play').click();
+	const dot = page.locator('circle.fdot.clickable').first();
+	const found = await dot
+		.waitFor({ state: 'visible', timeout: 5000 })
+		.then(() => true)
+		.catch(() => false);
+	test.skip(!found, 'fixture: no clickable dot frozen at this playhead');
+	await dot.click({ force: true });
+	await page.waitForURL((u) => u.pathname.includes('/investigations/'), { timeout: 15000 });
+	expect(page.url()).toContain('view=replay');
+	await expect(page.getByTestId('pipeline-map')).toBeVisible({ timeout: 25000 });
+});
+
+test('replay transport: pause/restart/scrub drive the film clock', async ({ page }) => {
+	await login(page);
+	const list = await getJson<{ items: { id: string; status: string }[] }>(
+		page,
+		'/api/investigations?page_size=50'
+	);
+	const inv = list.items.find((i) => i.status === 'active') ?? list.items[0];
+	await page.goto(`/investigations/${inv.id}?view=replay`);
+	await expect(page.getByTestId('pipeline-map')).toBeVisible({ timeout: 25000 });
+	const transport = page.getByTestId('replay-transport');
+	await expect(transport).toBeVisible({ timeout: 10000 });
+
+	// Restart (second transport button) rewinds the clock, then the film
+	// advances again: transport text must change across a short window.
+	await transport.locator('button').nth(1).click();
+	const t1 = (await transport.textContent()) ?? '';
+	await page.waitForTimeout(1200);
+	const t2 = (await transport.textContent()) ?? '';
+	expect(t2, 'film clock did not advance after restart').not.toBe(t1);
+
+	// Pause: clock freezes.
+	await page.getByTestId('replay-play').click();
+	const p1 = (await transport.textContent()) ?? '';
+	await page.waitForTimeout(1000);
+	const p2 = (await transport.textContent()) ?? '';
+	expect(p2, 'film clock kept moving while paused').toBe(p1);
+});
+
+test('audit log page renders real audit events from its API', async ({ page }) => {
+	await login(page);
+	const audit = await getJson<{ items?: { event_type?: string; action?: string }[] }>(
+		page,
+		'/api/audit?page_size=20'
+	);
+	const items = audit.items ?? [];
+	await page.goto('/audit');
+	await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+	if (items.length === 0) {
+		// Empty tenant audit trail is legal — the page must still render.
+		expect(page.url()).toContain('/audit');
+		return;
+	}
+	// At least one API event type/action string appears in the rendered log.
+	const needles = [
+		...new Set(items.map((i) => i.event_type ?? i.action ?? '').filter(Boolean))
+	].slice(0, 5);
+	let seen = 0;
+	for (const n of needles) {
+		if ((await page.getByText(n, { exact: false }).count()) > 0) seen++;
+	}
+	expect(seen, `none of ${needles.join(', ')} visible in the audit UI`).toBeGreaterThan(0);
+});
+
+test('authorization page renders the facts its API returns', async ({ page }) => {
+	await login(page);
+	// Capture the page's own facts call (the page resolves tenant id itself).
+	const factsResp = page.waitForResponse(
+		(r) => r.url().includes('/authorization/facts') && r.request().method() === 'GET',
+		{ timeout: 25000 }
+	);
+	await page.goto('/authorization');
+	const resp = await factsResp.catch(() => null);
+	test.skip(!resp, 'authorization page did not fetch facts (surface changed?)');
+	expect(resp!.status()).toBe(200);
+	const body = (await resp!.json()) as { facts?: { id: string }[] };
+	const facts = body.facts ?? [];
+	await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+	if (facts.length > 0) {
+		// The page shows a populated facts surface, not an empty state.
+		const empty = page.getByText(/no .*(facts|authorizations)/i);
+		expect(await empty.count(), 'facts exist but UI shows empty state').toBe(0);
+	}
+});
+
+test('i18n: localized route renders a translated fleet panel', async ({ page }) => {
+	await login(page);
+	await page.goto('/es-419/analytics');
+	await page.waitForLoadState('networkidle', { timeout: 20000 }).catch(() => {});
+	expect(page.url(), 'localized route bounced').toContain('/es-419/');
+	await expect(page.getByTestId('fleet-panel')).toBeVisible({ timeout: 20000 });
+	// The panel heading must NOT be the English string on the es-419 route.
+	const heading = ((await page.getByTestId('fleet-panel').textContent()) ?? '').slice(0, 400);
+	expect(heading).not.toContain('The fleet — today');
+	// And the film still works in the localized shell.
+	await page.getByTestId('fleet-play').click();
+	await page.waitForTimeout(1200);
+	const rail = await readStatRail(page);
+	expect(Object.keys(rail).length).toBeGreaterThanOrEqual(4);
+});
+
+test('investigations pagination: page 2 shows different rows than page 1', async ({ page }) => {
+	await login(page);
+	const p1 = await getJson<{ items: { id: string }[]; total: number }>(
+		page,
+		'/api/investigations?page=1&page_size=20'
+	);
+	test.skip(p1.total <= 20, 'fixture: not enough investigations to paginate');
+	const p2 = await getJson<{ items: { id: string }[] }>(
+		page,
+		'/api/investigations?page=2&page_size=20'
+	);
+	const ids1 = new Set(p1.items.map((i) => i.id));
+	const overlap = p2.items.filter((i) => ids1.has(i.id));
+	expect(overlap, 'API pages overlap').toEqual([]);
+	// UI: navigate to page 2 if a pager exists; tolerate a UI without one.
+	await page.goto('/investigations');
+	const next = page
+		.getByRole('button', { name: /next|›|→/i })
+		.or(page.getByRole('link', { name: /next|›|→/i }))
+		.first();
+	if ((await next.count()) > 0 && (await next.isEnabled().catch(() => false))) {
+		await next.click();
+		await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+		expect(page.url()).toContain('/investigations');
+	}
 });
