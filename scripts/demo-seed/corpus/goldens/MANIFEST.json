@@ -1,0 +1,16 @@
+{
+  "source": "/Users/gianlucabrigandi/Development/wa/soctalk-goldens/data_m0",
+  "seed": 72,
+  "groups_per_rule": 6,
+  "rules": {
+    "5402": 8,
+    "5403": 8,
+    "550": 8,
+    "5501": 8,
+    "554": 8,
+    "5715": 8,
+    "5902": 8
+  },
+  "selected_groups": 42,
+  "selected_cases": 746
+}
