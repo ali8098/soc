@@ -34,6 +34,7 @@ import random
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -61,10 +62,16 @@ def build_plan(args: argparse.Namespace) -> list[dict]:
     events += scripted_families(rng, args.covered, args.veto, args.escalate)
     events += goldens_events(rng, args.goldens)
 
+    # The fleet time-lapse windows on the VIEWER's local day (the frontend
+    # sends Intl timeZone to /analytics/fleet-day, and closes are stamped
+    # now()). Default the arrival window to local-midnight -> now in
+    # --tz so dots and close counters land on the same lapse day; a UTC
+    # default would straddle the local midnight for any non-UTC audience.
+    zone = ZoneInfo(args.tz)
     start = (
         datetime.fromisoformat(args.window_start)
         if args.window_start
-        else datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+        else datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
     )
     end = (
         datetime.fromisoformat(args.window_end)
@@ -293,6 +300,13 @@ def main() -> None:
     runp.add_argument("--goldens", type=int, default=18)
     runp.add_argument("--window-start", default=None)
     runp.add_argument("--window-end", default=None)
+    runp.add_argument(
+        "--tz",
+        default=os.environ.get("SEED_TZ", "UTC"),
+        help="viewer/demo timezone; default arrival window is this tz's "
+        "local day so the fleet time-lapse sees arrivals and closes on "
+        "one day (frontend windows fleet-day on the browser tz)",
+    )
     runp.add_argument("--batch-size", type=int, default=400)
     runp.add_argument("--manifest", default=str(Path(__file__).parent / "manifest.json"))
     runp.add_argument("--dry-run", action="store_true")

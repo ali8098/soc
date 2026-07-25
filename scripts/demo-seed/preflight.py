@@ -60,14 +60,15 @@ def main() -> None:
     except Exception as e:  # noqa: BLE001
         _fail(f"could not import soctalk config: {e}")
 
-    cfg = load_config()
+    cfg = load_config()  # Config; .llm is the LLMConfig resolve_tier wants
     for tier in (InferenceTier.ROUTER, InferenceTier.REASONING):
         try:
-            resolved = resolve_tier(cfg, tier)
+            resolved = resolve_tier(cfg.llm, tier)
         except Exception as e:  # noqa: BLE001
             _fail(f"tier {tier} did not resolve: {e}")
-        base = getattr(getattr(resolved, "llm_config", None), "openai_base_url", None)
-        provider = getattr(getattr(resolved, "llm_config", None), "provider", None)
+        scoped = getattr(resolved, "llm_config", None)
+        base = getattr(scoped, "openai_base_url", None)
+        provider = getattr(scoped, "provider", None)
         if provider == "anthropic":
             _fail(f"tier {tier} resolved to anthropic (paid)")
         if not base or STUB not in str(base):

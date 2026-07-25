@@ -23,10 +23,14 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 # .env-independent shell exports); we then add back only what the worker
 # needs and the single stub key. ANTHROPIC_API_KEY is set EMPTY so the
 # app's own load_dotenv() cannot re-populate it (dotenv won't override a
-# set var).
+# set var). PATH is derived from the resolved uv location so env -i can't
+# strip the interpreter off PATH (exit 127).
+UV_BIN="${UV_BIN:-$(command -v uv || true)}"
+[[ -n "$UV_BIN" ]] || { echo "uv not found on PATH; set UV_BIN=" >&2; exit 1; }
+UV_DIR="$(dirname "$UV_BIN")"
 CLEAN=(
   env -i
-  PATH="/usr/bin:/bin:/usr/local/bin:$HOME/.local/bin"
+  PATH="$UV_DIR:/usr/bin:/bin:/usr/local/bin:$HOME/.local/bin"
   HOME="$HOME"
   ANTHROPIC_API_KEY=
   OPENAI_API_KEY=sk-demo-playback

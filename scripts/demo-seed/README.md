@@ -71,8 +71,15 @@ claiming pre-existing organic runs).
 4. Mint adapter + worker tokens with the install signing key
    (`kubectl get secret` in soctalk-system; `mint_adapter_token`/`mint_worker_token`).
 5. Start `provider.py` locally (port 8091).
-6. `seed.py run ... --api http://127.0.0.1:8000` — injects alerts + facts
-   and publishes the manifest atomically. This creates the promoted runs.
+6. `seed.py run ... --api http://127.0.0.1:8000 --tz <audience-tz>` —
+   injects alerts + facts and publishes the manifest atomically; creates
+   the promoted runs. **Set `--tz` to the demo audience's timezone**
+   (e.g. `America/Los_Angeles`): the fleet time-lapse windows on the
+   *browser's* local day and closes are stamped at seed time, so a
+   UTC-window seed viewed from another timezone splits arrivals and
+   close counters across two lapse days (verified locally: UTC window →
+   8/264 dots on "today"; tz-aligned window → 261/261 dots + all
+   counters on one day, 19 distinct arrival hours).
 7. Start the cost-safe worker via the launcher (scrubbed env + preflight
    that ABORTS unless every resolved tier points at the stub):
    `STUB=http://127.0.0.1:8091/v1 API=http://127.0.0.1:8000
