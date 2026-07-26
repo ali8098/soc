@@ -299,10 +299,14 @@ async def fleet_live(
             await db.execute(
                 text(
                     """
-                    SELECT id, investigation_id, first_event_at, status
-                    FROM alerts
-                    WHERE first_event_at >= :recent AND first_event_at < :e
-                    ORDER BY first_event_at DESC
+                    SELECT a.id, i.id AS investigation_id, a.first_event_at,
+                           a.status
+                    FROM alerts a
+                    -- RLS-scoped join: no drill link to an investigation the
+                    -- caller's session cannot open (see the fleet-day dots query).
+                    LEFT JOIN investigations i ON i.id = a.investigation_id
+                    WHERE a.first_event_at >= :recent AND a.first_event_at < :e
+                    ORDER BY a.first_event_at DESC
                     LIMIT :lim
                     """
                 ),
@@ -441,7 +445,12 @@ async def fleet_day(
                 text(
                     """
                     SELECT a.id AS alert_id,
-                           a.investigation_id,
+                           -- Drill-down link ONLY when the caller's session can
+                           -- actually open the investigation: i is RLS-scoped, so
+                           -- i.id is NULL for e.g. mssp_only investigations in a
+                           -- tenant-audience session, and the frontend renders the
+                           -- dot as non-clickable instead of 404ing on click.
+                           i.id AS investigation_id,
                            a.first_event_at,
                            i.closed_at,
                            i.status AS inv_status,

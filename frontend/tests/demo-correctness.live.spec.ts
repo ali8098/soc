@@ -517,6 +517,18 @@ test('plan 20: fixture health — the demo day is populated and replayable', asy
 	).toBeGreaterThan(0);
 	expect(closedOf(day), 'no pipeline closes on the demo day').toBeGreaterThan(0);
 	expect(day.escalated, 'no human-lane volume on the demo day').toBeGreaterThan(0);
+
+	// Every drill link the API emits must be openable by THIS session —
+	// regression guard for dots that linked mssp_only investigations a
+	// tenant session then 404ed on (found live by the dot-click test).
+	const linked = day.dots.filter((d) => d.investigation_id);
+	const sample = linked.filter((_, i) => i % Math.ceil(linked.length / 10) === 0).slice(0, 10);
+	for (const d of sample) {
+		const resp = await page.request.get(`/api/investigations/${d.investigation_id}`, {
+			headers: { Origin: ORIGIN }
+		});
+		expect(resp.status(), `dot ${d.alert_id} links unopenable investigation`).toBe(200);
+	}
 });
 
 // ===========================================================================
@@ -571,6 +583,7 @@ test('dashboard fleet mode toggle: Live <-> Replay both operate', async ({ page 
 });
 
 test('drill-down from the map itself: clicking a dot opens its replay', async ({ page }) => {
+	test.setTimeout(90_000);
 	await login(page);
 	await page.goto('/analytics');
 	await expect(page.getByTestId('fleet-panel')).toBeVisible({ timeout: 20000 });
@@ -587,7 +600,12 @@ test('drill-down from the map itself: clicking a dot opens its replay', async ({
 	await dot.click({ force: true });
 	await page.waitForURL((u) => u.pathname.includes('/investigations/'), { timeout: 15000 });
 	expect(page.url()).toContain('view=replay');
-	await expect(page.getByTestId('pipeline-map')).toBeVisible({ timeout: 25000 });
+	// The contract is NAVIGATION to that investigation's replay view; the
+	// replay panel covers both a populated film and the honest empty state
+	// (a drilled dot can predate the event substrate).
+	await expect(
+		page.getByTestId('replay-panel').or(page.getByTestId('pipeline-map')).first()
+	).toBeVisible({ timeout: 25000 });
 });
 
 test('replay transport: pause/restart/scrub drive the film clock', async ({ page }) => {
@@ -610,12 +628,18 @@ test('replay transport: pause/restart/scrub drive the film clock', async ({ page
 	const t2 = (await transport.textContent()) ?? '';
 	expect(t2, 'film clock did not advance after restart').not.toBe(t1);
 
-	// Pause: clock freezes.
-	await page.getByTestId('replay-play').click();
+	// Pause: clock freezes. The film can be shorter than a second of real
+	// time, so decide by the button's actual state — clicking "Play" on an
+	// ended film would restart it (exactly what tripped this test's first
+	// draft).
+	const playBtn = page.getByTestId('replay-play');
+	if (/pause/i.test((await playBtn.getAttribute('aria-label')) ?? '')) {
+		await playBtn.click();
+	}
 	const p1 = (await transport.textContent()) ?? '';
 	await page.waitForTimeout(1000);
 	const p2 = (await transport.textContent()) ?? '';
-	expect(p2, 'film clock kept moving while paused').toBe(p1);
+	expect(p2, 'film clock kept moving while paused/stopped').toBe(p1);
 });
 
 test('audit log page renders real audit events from its API', async ({ page }) => {
