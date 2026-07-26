@@ -24,6 +24,21 @@ from sqlalchemy import text
 from soctalk.core.tenancy.auth import current_identity
 from soctalk.core.tenancy.context import tenant_context
 from soctalk.core.tenancy.db import get_app_sessionmaker
+from soctalk.core.tenancy.models import UserType
+
+# NOTE on visibility: these endpoints run on a fresh session whose
+# TenantContext defaults audience='mssp', so the panel's AGGREGATES are
+# mssp-scope — deliberate for now, because the adapter stamps every alert
+# and every ingest-band investigation ``mssp_only`` and a strict
+# customer-audience read would blank the tenant fleet panel entirely.
+# Drill LINKS are different: the tenant's own detail page runs under the
+# request session's customer audience, so a link to an ``mssp_only``
+# investigation 404s. The queries below therefore null the link unless
+# the CALLER's audience can actually open the target.
+
+
+def _caller_is_mssp(identity: Any) -> bool:
+    return identity.user_type != UserType.TENANT.value
 
 logger = structlog.get_logger()
 
@@ -232,7 +247,7 @@ async def fleet_live(
 
     sm = get_app_sessionmaker()
     async with sm() as db, tenant_context(db, tenant_id):
-        p: dict[str, Any] = {"s": start, "e": end}
+        p: dict[str, Any] = {"s": start, "e": end, "mssp": _caller_is_mssp(identity)}
         server_now = (await db.execute(text("SELECT now()"))).scalar_one()
 
         alerts_row = (
@@ -299,11 +314,14 @@ async def fleet_live(
             await db.execute(
                 text(
                     """
-                    SELECT a.id, i.id AS investigation_id, a.first_event_at,
+                    SELECT a.id,
+                           -- Same caller-audience link gate as fleet-day dots.
+                           CASE WHEN :mssp
+                                  OR i.visibility IN ('customer_safe', 'system')
+                                THEN i.id END AS investigation_id,
+                           a.first_event_at,
                            a.status
                     FROM alerts a
-                    -- RLS-scoped join: no drill link to an investigation the
-                    -- caller's session cannot open (see the fleet-day dots query).
                     LEFT JOIN investigations i ON i.id = a.investigation_id
                     WHERE a.first_event_at >= :recent AND a.first_event_at < :e
                     ORDER BY a.first_event_at DESC
@@ -367,7 +385,7 @@ async def fleet_day(
 
     sm = get_app_sessionmaker()
     async with sm() as db, tenant_context(db, tenant_id):
-        p: dict[str, Any] = {"s": start, "e": end, "tz": tz}
+        p: dict[str, Any] = {"s": start, "e": end, "tz": tz, "mssp": _caller_is_mssp(identity)}
 
         server_now = (await db.execute(text("SELECT now()"))).scalar_one()
 
@@ -445,12 +463,12 @@ async def fleet_day(
                 text(
                     """
                     SELECT a.id AS alert_id,
-                           -- Drill-down link ONLY when the caller's session can
-                           -- actually open the investigation: i is RLS-scoped, so
-                           -- i.id is NULL for e.g. mssp_only investigations in a
-                           -- tenant-audience session, and the frontend renders the
-                           -- dot as non-clickable instead of 404ing on click.
-                           i.id AS investigation_id,
+                           -- Drill-down link ONLY when the caller can actually
+                           -- open the investigation: a tenant session's detail
+                           -- page hides mssp_only rows, so linking one 404s.
+                           CASE WHEN :mssp
+                                  OR i.visibility IN ('customer_safe', 'system')
+                                THEN i.id END AS investigation_id,
                            a.first_event_at,
                            i.closed_at,
                            i.status AS inv_status,
