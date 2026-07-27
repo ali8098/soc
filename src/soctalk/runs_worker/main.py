@@ -559,6 +559,53 @@ async def _heartbeat_loop(
             logger.warning("heartbeat_failed run=%s err=%s", run_id, e)
 
 
+# Error categories that mean "the backend was transiently unavailable" rather
+# than "this run produced a bad/failed triage". A run that fails on one of these
+# is RELEASED for a bounded retry (same run_id) instead of terminally failed, so
+# a cold serverless endpoint (#77) never loses an alert. Kept narrow on purpose:
+# credit-lack, rate-limit, and schema failures are NOT here — they are real
+# terminal conditions, not cold starts.
+TRANSIENT_RETRY_CATEGORIES = frozenset({"serverless_unavailable"})
+
+
+async def _post_release(
+    client: httpx.AsyncClient, run_id: str, lease_id: str, category: str,
+    tokens_used: int, dollars_used: float,
+) -> None:
+    """POST a release-for-retry. Same transport tolerance as _post_complete:
+    a 409 means we no longer own the run (benign), transport blips are retried
+    a few times then abandoned (the lease reaper requeues if uncommitted)."""
+    token = _read_token()
+    url = f"{_api_url()}/api/internal/worker/runs/{run_id}/release"
+    body = json.dumps({
+        "lease_id": lease_id, "error_category": category,
+        "tokens_used": tokens_used, "dollars_used": dollars_used,
+    })
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    attempts = max(1, int(os.environ.get("WORKER_COMPLETE_ATTEMPTS", "3")))
+    for attempt in range(1, attempts + 1):
+        try:
+            resp = await client.post(url, headers=headers, content=body, timeout=15.0)
+        except Exception as e:  # noqa: BLE001 — transport error; lease reaper covers uncommitted
+            if attempt >= attempts:
+                logger.warning("release_unconfirmed run=%s err=%s", run_id, e)
+                return
+            await asyncio.sleep(min(2**attempt, 8))
+            continue
+        if resp.status_code == 409:
+            logger.info("release_not_owned run=%s (409, benign)", run_id)
+            return
+        if resp.status_code >= 400:
+            logger.warning("release_failed run=%s status=%s body=%s",
+                           run_id, resp.status_code, resp.text[:300])
+            return
+        info = resp.json()
+        logger.info("run_released run=%s category=%s retrying=%s attempts=%s/%s",
+                    run_id, category, info.get("retrying"),
+                    info.get("attempts"), info.get("max_attempts"))
+        return
+
+
 async def _post_complete(
     client: httpx.AsyncClient, run_id: str, complete_payload: dict[str, Any]
 ) -> None:
@@ -661,6 +708,31 @@ async def _run_one(client: httpx.AsyncClient, claim: dict[str, Any]) -> None:
     supervisor_err_category = (
         supervisor_err.get("category") if isinstance(supervisor_err, dict) else None
     )
+    # Transient backend unavailability (cold serverless endpoint, #77): release
+    # the run for a bounded retry on the SAME run_id instead of failing it. The
+    # server enforces the attempt cap and terminalizes once exhausted, so no
+    # completed-run side effect ever replays. Checked FIRST, before the terminal
+    # status mapping below, and only for the classified transient categories.
+    transient_category = (
+        supervisor_err_category
+        if supervisor_err_category in TRANSIENT_RETRY_CATEGORIES
+        else verdict_err_category
+        if verdict_err_category in TRANSIENT_RETRY_CATEGORIES
+        else None
+    )
+    if transient_category is not None and not halted:
+        # Flush the tail of the replay journey before releasing (release clears
+        # the lease, same as complete), then release; do NOT build a verdict.
+        for attempt in range(3):
+            if await _flush_replay_events(client, run_id, lease_id, sink):
+                break
+            await asyncio.sleep(min(2**attempt, 4))
+        logger.info("run_transient run=%s category=%s -> release", run_id, transient_category)
+        await _post_release(
+            client, run_id, lease_id, transient_category, used, dollars_used,
+        )
+        return
+
     if last_error:
         status = "failed"
     elif halted:

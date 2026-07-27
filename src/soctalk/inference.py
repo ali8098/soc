@@ -32,6 +32,7 @@ from langchain_core.messages import HumanMessage
 from soctalk.config import LLMConfig
 from soctalk.llm import (
     SchemaValidationError,
+    ServerlessUnavailableError,
     create_chat_model,
     make_system_message,
 )
@@ -815,6 +816,34 @@ def _usage_record(result: InferenceResult, profile: DeliveryProfile) -> UsageRec
     )
 
 
+# Signatures a scale-to-zero endpoint emits while cold-starting / with no ready
+# workers. Matched ONLY for scale_to_zero backends (see ainvoke_request), so a
+# 404 on a warm frontier is never mistaken for a cold start. Deliberately
+# narrow: a permanent bad base_url/model 404 does NOT carry these bodies, and
+# even if a raw 404 slips through, treating a warm-backend 404 as terminal is
+# the safe default (only scale_to_zero opts in).
+_COLD_START_STATUSES = {404, 408, 425, 429, 500, 502, 503, 504}
+_COLD_START_MARKERS = (
+    "no workers", "no ready workers", "worker is starting", "initializing",
+    "not ready", "cold start", "endpoint is starting", "please try again",
+    "temporarily unavailable", "502 bad gateway", "503 service unavailable",
+    "connection refused", "connection reset", "timed out", "timeout",
+)
+
+
+def _is_cold_start_error(e: BaseException) -> bool:
+    """True if an exception looks like a scale-to-zero endpoint that is warming
+    rather than a permanent misconfiguration. Status-code OR body-marker match;
+    caller gates this on readiness == scale_to_zero."""
+    status = getattr(e, "status_code", None) or getattr(
+        getattr(e, "response", None), "status_code", None
+    )
+    if status in _COLD_START_STATUSES:
+        return True
+    msg = str(e).lower()
+    return any(m in msg for m in _COLD_START_MARKERS)
+
+
 async def ainvoke_request(
     req: InferenceRequest, *, cfg: LLMConfig,
 ) -> InferenceResult[Any]:
@@ -838,7 +867,14 @@ async def ainvoke_request(
         has_schema=req.output_schema is not None, has_grammar=req.grammar is not None,
     )
     backend = select_backend(rb)
-    result = await backend.invoke(req, resolved, mode)
+    try:
+        result = await backend.invoke(req, resolved, mode)
+    except Exception as e:  # noqa: BLE001 — re-raise as-is unless it's a
+        # profile-scoped cold-start signal, in which case reclassify it so the
+        # worker can release-and-retry instead of failing the run terminally.
+        if rb.profile.readiness == "scale_to_zero" and _is_cold_start_error(e):
+            raise ServerlessUnavailableError(str(e)[:500]) from e
+        raise
     result.usage_record = _usage_record(result, rb.profile)
     return result
 

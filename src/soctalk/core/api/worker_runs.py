@@ -30,6 +30,12 @@ router = APIRouter(prefix="/api/internal/worker", tags=["internal-worker"])
 
 LEASE_TTL_SECONDS = 60
 
+# How long a transient-failed run waits before it becomes claimable again.
+# Long enough to let a cold serverless endpoint finish warming; short enough
+# that the alert is not stuck for minutes. Multiplied by the attempt count for
+# a gentle backoff.
+RETRY_BACKOFF_SECONDS = 15
+
 
 async def _record_verdict_memo(
     db, tenant_id, investigation_id, *, decision: str, confidence: float
@@ -214,6 +220,18 @@ class WorkerEventItem(BaseModel):
 class WorkerEventsPayload(BaseModel):
     lease_id: UUID
     events: list[WorkerEventItem] = Field(default_factory=list, max_length=200)
+
+
+class ReleasePayload(BaseModel):
+    """Release a run back to the queue for a bounded retry on the SAME run_id
+    after a TRANSIENT provider failure (e.g. a cold serverless endpoint). Not
+    a terminal state: the run stays ``active`` unless the attempt cap is hit,
+    in which case the server terminalizes it to ``failed`` itself."""
+
+    lease_id: UUID
+    error_category: str = Field(max_length=64)
+    tokens_used: int = Field(default=0, ge=0)
+    dollars_used: float | None = Field(default=None, ge=0.0)
 
 
 class CompletePayload(BaseModel):
@@ -522,6 +540,88 @@ async def append_run_events(
             )
             appended += 1
     return {"ok": True, "appended": appended}
+
+
+@router.post("/runs/{run_id}/release")
+async def release_run(
+    run_id: UUID, payload: ReleasePayload, request: Request
+) -> dict[str, Any]:
+    """Release a leased run for a bounded retry after a TRANSIENT failure.
+
+    Lease-checked exactly like complete/heartbeat (only the current lease
+    holder can act). While under the attempt cap the run stays ``active``,
+    its lease is cleared, ``attempts`` is bumped, ``not_before`` is pushed out
+    by a per-attempt backoff, and it becomes claimable again on the SAME
+    ``run_id`` — so no completed-run side effect (response dispatch, HIL
+    review, memoization, follow-up runs; all keyed on run_id) ever replays.
+
+    Once ``attempts`` reaches ``max_attempts`` the release terminalizes the
+    run to ``failed`` instead, so a permanently-cold backend can't retry
+    forever. The persisted ``dollars_used`` is preserved (COALESCE) so the
+    per-run cap stays honest across retries, same contract as heartbeat.
+    """
+    tenant_id = _verify_worker_jwt(request)
+    db = _db(request)
+    async with tenant_context(db, tenant_id):
+        row = (
+            await db.execute(
+                text(
+                    """
+                    UPDATE investigation_runs
+                       SET attempts = attempts + 1,
+                           last_error_category = :cat,
+                           last_error = :err,
+                           tokens_used = :u,
+                           dollars_used = COALESCE(:d, dollars_used),
+                           -- terminalize on the last attempt, else keep active
+                           status = CASE WHEN attempts + 1 >= max_attempts
+                                         THEN 'failed' ELSE 'active' END,
+                           ended_at = CASE WHEN attempts + 1 >= max_attempts
+                                           THEN now() ELSE ended_at END,
+                           -- release the lease either way
+                           lease_id = NULL,
+                           lease_expires_at = NULL,
+                           claimed_at = NULL,
+                           claimed_by = NULL,
+                           -- gentle per-attempt backoff before reclaim
+                           -- (no-op once failed); scales with the new attempt count
+                           not_before = now()
+                               + make_interval(secs => :backoff * (attempts + 1))
+                     WHERE id = :id
+                       AND tenant_id = :t
+                       AND lease_id = :lid
+                       AND status = 'active'
+                    RETURNING attempts, max_attempts, status
+                    """
+                ),
+                {
+                    "cat": payload.error_category[:64],
+                    "err": f"transient:{payload.error_category}"[:4096],
+                    "u": payload.tokens_used,
+                    "d": payload.dollars_used,
+                    "backoff": RETRY_BACKOFF_SECONDS,
+                    "id": str(run_id),
+                    "t": str(tenant_id),
+                    "lid": str(payload.lease_id),
+                },
+            )
+        ).mappings().first()
+        if row is None:
+            raise HTTPException(409, "lease expired or run not active")
+    terminal = row["status"] == "failed"
+    logger.info(
+        "run_released" if not terminal else "run_retry_exhausted",
+        run_id=str(run_id),
+        attempts=row["attempts"],
+        max_attempts=row["max_attempts"],
+        category=payload.error_category,
+    )
+    return {
+        "ok": True,
+        "retrying": not terminal,
+        "attempts": row["attempts"],
+        "max_attempts": row["max_attempts"],
+    }
 
 
 @router.post("/runs/{run_id}/complete")

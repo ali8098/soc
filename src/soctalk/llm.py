@@ -19,6 +19,15 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from soctalk.config import LLMConfig
 
 
+class ServerlessUnavailableError(ValueError):
+    """A scale-to-zero backend was unavailable in a way that is TRANSIENT: it
+    is cold-starting / has no ready workers yet (RunPod proxy 404, "no workers
+    available", "initializing", 502/503 during spin-up). Raised ONLY when the
+    resolved DeliveryProfile is scale_to_zero, so the same 404 on a warm
+    frontier stays a permanent ``provider_error``. The worker releases a run
+    that fails this way for a bounded retry on the same run_id (issue #77)."""
+
+
 class LLMProviderError(ValueError):
     """Raised when the configured LLM provider is invalid or incomplete."""
 
@@ -32,6 +41,9 @@ def classify_llm_error(e: BaseException) -> str:
     """Bucket an LLM-provider exception into a stable category string.
 
     Categories the worker actually branches on:
+      * ``serverless_unavailable`` — scale-to-zero backend cold-starting; the
+                                     worker releases the run for a bounded retry
+                                     rather than failing it terminally (#77)
       * ``insufficient_credit`` — provider billing / quota lack
       * ``rate_limited``        — provider 429 / TPM RPM exceeded
       * ``provider_error``      — other 4xx/5xx from the provider
@@ -43,6 +55,8 @@ def classify_llm_error(e: BaseException) -> str:
     state["supervisor_error"]; the raw error string is intentionally
     kept out of any user-facing field.
     """
+    if isinstance(e, ServerlessUnavailableError):
+        return "serverless_unavailable"
     if isinstance(e, SchemaValidationError):
         return "schema_validation"
     msg = str(e).lower()
