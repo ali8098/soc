@@ -56,7 +56,11 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist/pkg
-          for fmt in rpm deb apk; do
+          # rpm + deb only. The apk was dropped: `soctalk install` requires
+          # systemd and Alpine is OpenRC, so the package's headline command
+          # can't run there. Re-add 'apk' here once install.sh supports OpenRC
+          # end-to-end (see docs/ova-esxi-firstboot-findings.md sibling work).
+          for fmt in rpm deb; do
             echo "==> building $fmt"
             nfpm pkg -f packaging/nfpm.yaml -p "$fmt" -t dist/pkg/
           done
@@ -68,6 +72,6 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          files=(dist/pkg/*.rpm dist/pkg/*.deb dist/pkg/*.apk)
+          files=(dist/pkg/*.rpm dist/pkg/*.deb)
           echo "attaching ${#files[@]} packages to v${{ inputs.version }}:"; printf '  %s\n' "${files[@]}"
           gh release upload "v${{ inputs.version }}" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"

@@ -1,8 +1,13 @@
-# nFPM spec for the `soctalk` OS package (rpm / deb / apk) — see issue #70.
-# One spec -> yum/dnf, apt, and Alpine. Build:
+# nFPM spec for the `soctalk` OS package (rpm / deb) — see issue #70.
+# One spec -> yum/dnf and apt. Build:
 #   VERSION=0.2.0 nfpm pkg -f packaging/nfpm.yaml -p rpm -t dist/
 # (run from the repo root; paths below are repo-root-relative). ${VERSION} and
 # ${ARCH} are expanded from the environment by nfpm.
+#
+# NOTE: the release pipeline builds rpm + deb ONLY. apk is intentionally not
+# shipped: `soctalk install` requires systemd and Alpine is OpenRC, so the
+# package's headline command can't run there. The apk override below is kept
+# for when install.sh gains OpenRC support; it is currently unused.
 name: soctalk
 arch: ${ARCH}
 platform: linux

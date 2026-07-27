@@ -1,7 +1,7 @@
 name: Cut k8s Release
 
 # Cuts a full release in ONE action: container images + Helm charts + GitHub
-# Release + OS packages (rpm/deb/apk), and it kicks off the demo VM image + OVA
+# Release + OS packages (rpm/deb), and it kicks off the demo VM image + OVA
 # build. So a release always carries every artifact — nothing to remember to
 # run separately.
 #
@@ -13,7 +13,7 @@ name: Cut k8s Release
 #      - re-builds the images from the current ref and tags them `X.Y.Z`,
 #      - re-pushes the charts (idempotent),
 #      - creates tag vX.Y.Z + the GitHub Release,
-#      - builds + attaches the rpm/deb/apk packages (fast, inline), and
+#      - builds + attaches the rpm/deb packages (fast, inline), and
 #      - dispatches build-packer-images.yml (async) for the VM images + OVA,
 #        which attach to the same release when the ~50-min build finishes.
 #
@@ -187,8 +187,9 @@ jobs:
             echo
             echo "## OS packages"
             echo
-            echo "Attached below: \`soctalk-<ver>.rpm\` (dnf/yum), \`.deb\` (apt), \`.apk\` (Alpine)."
+            echo "Attached below: \`soctalk-<ver>.rpm\` (dnf/yum) and \`.deb\` (apt)."
             echo "Install: e.g. \`sudo dnf install ./soctalk-${ver}.rpm && sudo soctalk install\`."
+            echo "Alpine is not supported (\`soctalk install\` needs systemd); use the VM appliance."
             echo
             echo "> Demo VM images (qcow2/vmdk/ova/…) build automatically and attach here when ready."
             echo
@@ -221,7 +222,7 @@ jobs:
               --notes-file body.md
           fi
 
-  # OS packages (rpm/deb/apk) — built + attached to the release on EVERY cut
+  # OS packages (rpm/deb) — built + attached to the release on EVERY cut
   # so a release always carries them. Fast (~1 min); reuses packages.yml.
   packages:
     name: OS packages
