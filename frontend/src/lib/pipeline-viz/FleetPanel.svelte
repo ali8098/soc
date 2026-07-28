@@ -41,6 +41,12 @@
 	let error: string | null = null;
 	let dayHandle: ReturnType<typeof setInterval> | null = null;
 	let liveHandle: ReturnType<typeof setInterval> | null = null;
+	/** Refresh landed while the film was running: hold it — a mid-film day
+	 * swap (worse, a DATE flip) reshuffles the story under the cursor. */
+	let pendingDay: FleetDay | null = null;
+	/** Escape hatch: the user clicked the last-activity badge and asked for
+	 * the true (empty) today instead of the fallback day. */
+	let pinToday = false;
 
 	const timeline = createTimeline(LAPSE_MS);
 	const clock = createServerClock();
@@ -49,6 +55,9 @@
 		browser ? Intl.DateTimeFormat().resolvedOptions().timeZone : 'UTC';
 	const reducedMotion = () =>
 		browser && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+	/** Viewer-tz calendar date (YYYY-MM-DD). NOT toISOString — that is UTC
+	 * and wrong near midnight for any non-UTC viewer (Codex). */
+	const viewerToday = () => new Date().toLocaleDateString('en-CA');
 
 	function dayFrac(d: FleetDay, serverNowIso: string): number {
 		const start = Date.parse(d.window_start);
@@ -56,22 +65,68 @@
 		return Math.max(0, Math.min(1, (Date.parse(serverNowIso) - start) / (end - start)));
 	}
 
+	function applyDay(fresh: FleetDay) {
+		day = fresh;
+		schedule = buildFleetSchedule(fresh);
+	}
+
+	/** Request generation: a response fetched for a superseded mode or
+	 * fallback intent must be discarded, or a slow replay-fallback reply
+	 * can overwrite the live surface after a mode switch (Codex). */
+	let dayReq = 0;
+
 	async function loadDay(initial: boolean) {
+		const req = ++dayReq;
 		try {
-			day = await api.analytics.getFleetDay({ tz: tzName() });
-			schedule = buildFleetSchedule(day);
+			// Latest-active-day fallback (zero-only rule): today with ANY
+			// alerts always wins; an empty today is substituted server-side
+			// with the most recent active day, disclosed via the date label.
+			// REPLAY-ONLY (Codex): the live surface is the present tense —
+			// it must never carry a substituted day's title or stats.
+			const wantFallback = mode === 'replay' && !pinToday;
+			const fresh = await api.analytics.getFleetDay({
+				tz: tzName(),
+				fallback: wantFallback ? 'latest_active' : undefined
+			});
+			if (req !== dayReq) return; // superseded by a newer request
+			if (initial || !$timeline.playing) {
+				applyDay(fresh);
+				pendingDay = null;
+			} else {
+				pendingDay = fresh;
+			}
 			if (initial) {
 				loading = false;
 				if (mode === 'replay') {
-					// Recap surface: land on "the day so far", play only on demand.
+					// Recap surface: land on "the day so far" (a fallback day
+					// is complete, so the clamp parks at the full film).
 					timeline.setRate(1);
-					timeline.seek(dayFrac(day, day.server_now) * LAPSE_MS);
+					timeline.seek(dayFrac(fresh, fresh.server_now) * LAPSE_MS);
 				}
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : String(e);
 			loading = false;
 		}
+	}
+
+	// Apply a held refresh as soon as the film stops.
+	$: if (pendingDay && !$timeline.playing) {
+		applyDay(pendingDay);
+		pendingDay = null;
+	}
+
+	function showToday() {
+		// Explicit navigation away from the film: stop it first so the
+		// immediate re-apply/seek cannot land mid-play (Codex).
+		timeline.pause();
+		pinToday = true;
+		void loadDay(true);
+	}
+	function showLastActive() {
+		timeline.pause();
+		pinToday = false;
+		void loadDay(true);
 	}
 
 	async function pollLive() {
@@ -88,13 +143,19 @@
 	}
 
 	function catchupKey(): string {
-		return `soctalk-fleet-catchup-${new Date().toISOString().slice(0, 10)}`;
+		// Viewer-tz date, matching the day window (UTC here double-played
+		// or skipped the catch-up around midnight for non-UTC viewers).
+		return `soctalk-fleet-catchup-${viewerToday()}`;
 	}
 
 	function maybeStartCatchup() {
 		// Once per session per day, never under reduced motion (Codex/NN|g:
 		// a ritual replayed on every visit becomes an ignored roadblock).
+		// Never on an empty or substituted day: there is nothing of TODAY
+		// to catch up on, and auto-playing yesterday uninvited would blur
+		// the live/replay line.
 		if (!browser || !day || reducedMotion()) return;
+		if (day.ingested === 0 || day.date !== viewerToday()) return;
 		if (sessionStorage.getItem(catchupKey())) return;
 		sessionStorage.setItem(catchupKey(), '1');
 		const upto = dayFrac(day, live?.server_now ?? day.server_now) * LAPSE_MS;
@@ -128,6 +189,11 @@
 			timeline.setDuration(LAPSE_MS);
 			if (day) timeline.seek(dayFrac(day, live?.server_now ?? day.server_now) * LAPSE_MS);
 		}
+		// EVERY mode switch refetches under the new mode's intent (replay
+		// wants the fallback, live wants the plain present) — bumping the
+		// request generation so any in-flight response for the previous
+		// mode is discarded rather than landing stale (Codex).
+		void loadDay(true);
 	}
 
 	onMount(() => {
@@ -174,6 +240,17 @@
 		? day.closed_ingest_memoized + day.closed_ingest_rules + day.closed_operational + day.closed_reasoning
 		: 0;
 	$: showLiveHead = mode === 'live' && livePhase === 'head';
+	// Substituted day (today empty, latest active served): the label must
+	// move — playing Friday under a "today" heading would be a lie.
+	$: dayIsFallback = !!day && day.ingested > 0 && day.date !== viewerToday();
+	$: dayEmpty = !!day && day.ingested === 0;
+	$: dayLabel = day
+		? new Intl.DateTimeFormat(undefined, {
+				weekday: 'short',
+				month: 'short',
+				day: 'numeric'
+			}).format(new Date(`${day.date}T12:00:00`))
+		: '';
 	// Replay and the catch-up cam track the playhead: counters accumulate
 	// as dots land (projected onto the exact aggregates so they end on
 	// the true totals). Only the live head binds to the live snapshot.
@@ -241,7 +318,21 @@
 
 <section class="mb-8" data-testid="fleet-panel">
 	<div class="flex items-center gap-3 mb-3">
-		<h2 class="h3">{m.fleet_title()}</h2>
+		{#if dayIsFallback}
+			<h2 class="h3" data-testid="fleet-date-label">{m.fleet_title_date({ date: dayLabel })}</h2>
+			<button
+				type="button"
+				class="badge variant-soft-warning text-[0.65rem] uppercase tracking-wide"
+				title={m.fleet_show_today()}
+				aria-label={m.fleet_show_today()}
+				on:click={showToday}
+				data-testid="fleet-fallback-badge"
+			>
+				{m.fleet_last_activity()}
+			</button>
+		{:else}
+			<h2 class="h3">{m.fleet_title()}</h2>
+		{/if}
 		{#if showLiveHead}
 			<span class="badge variant-soft-error font-mono text-[0.65rem] live-chip" data-testid="fleet-live-chip">
 				<span class="live-dot" />
@@ -265,6 +356,25 @@
 		</div>
 	{:else if error}
 		<aside class="alert variant-soft-error"><p>{error}</p></aside>
+	{:else if day && dayEmpty && !showLiveHead}
+		<!-- Designed empty state (zero-only rule): pinToday means the user
+		     chose the true empty today via the badge; otherwise the fallback
+		     already ran and found nothing in 30 days. Quiet, not broken. -->
+		<div class="card p-10 text-center" data-testid="fleet-empty">
+			<p class="opacity-60">
+				{pinToday ? m.fleet_empty_today() : m.fleet_empty_month()}
+			</p>
+			{#if pinToday}
+				<button
+					type="button"
+					class="btn btn-sm variant-soft-primary mt-4 font-mono"
+					on:click={showLastActive}
+					data-testid="fleet-show-last-active"
+				>
+					{m.fleet_show_last_active()}
+				</button>
+			{/if}
+		</div>
 	{:else if day}
 		<div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
 			<div class="xl:col-span-2">

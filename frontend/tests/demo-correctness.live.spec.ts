@@ -722,6 +722,61 @@ test('i18n: localized route renders a translated fleet panel', async ({ page }) 
 	expect(Object.keys(rail).length).toBeGreaterThanOrEqual(4);
 });
 
+test('fallback: latest-active-day semantics (zero-only, explicit date honored)', async ({
+	page
+}) => {
+	await login(page);
+	// A far-ahead timezone is the most likely to have an empty "today".
+	const probeTz = 'Pacific/Kiritimati';
+	const plain = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${probeTz}`);
+	const fb = await getJson<FleetDay>(
+		page,
+		`/api/analytics/fleet-day?tz=${probeTz}&fallback=latest_active`
+	);
+	if (plain.ingested > 0) {
+		// Zero-only rule: a non-empty today must NOT be substituted.
+		expect(fb.date, 'fallback substituted a non-empty today').toBe(plain.date);
+		expect(fb.ingested).toBeGreaterThan(0);
+	} else {
+		// Empty today: fallback serves an earlier day with content, and
+		// every dot sits inside the substituted window.
+		expect(fb.date < plain.date, `fallback date ${fb.date} !< today ${plain.date}`).toBe(true);
+		expect(fb.ingested).toBeGreaterThan(0);
+		const ws = Date.parse(fb.window_start);
+		const we = Date.parse(fb.window_end);
+		const outside = fb.dots.filter((d) => {
+			const t = Date.parse(d.first_event_at);
+			return t < ws || t >= we;
+		});
+		expect(outside, 'dots outside the substituted window').toEqual([]);
+	}
+	// Explicit date NEVER substitutes, even when empty and fallback is set.
+	const explicit = await getJson<FleetDay>(
+		page,
+		`/api/analytics/fleet-day?tz=${TZ}&date=2020-01-01&fallback=latest_active`
+	);
+	expect(explicit.date).toBe('2020-01-01');
+	expect(explicit.ingested).toBe(0);
+});
+
+test('fallback: UI badge appears only when today is empty', async ({ page }) => {
+	await login(page);
+	const today = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}`);
+	await page.goto('/analytics');
+	await expect(page.getByTestId('fleet-panel')).toBeVisible({ timeout: 20000 });
+	if (today.ingested > 0) {
+		// Active today: no substitution, no badge, honest "today" title.
+		expect(await page.getByTestId('fleet-fallback-badge').count()).toBe(0);
+	} else {
+		// Empty today: disclosed substitution with the escape hatch.
+		await expect(page.getByTestId('fleet-fallback-badge')).toBeVisible({ timeout: 15000 });
+		await page.getByTestId('fleet-fallback-badge').click();
+		await expect(page.getByTestId('fleet-empty')).toBeVisible({ timeout: 15000 });
+		await page.getByTestId('fleet-show-last-active').click();
+		await expect(page.getByTestId('fleet-fallback-badge')).toBeVisible({ timeout: 15000 });
+	}
+});
+
 test('investigations pagination: page 2 shows different rows than page 1', async ({ page }) => {
 	await login(page);
 	const p1 = await getJson<{ items: { id: string }[]; total: number }>(

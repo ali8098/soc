@@ -725,16 +725,21 @@ export const api = {
 			return request<FleetLive>(`/analytics/fleet-live${qs ? `?${qs}` : ''}`);
 		},
 
-		// Fleet-day aggregate for the flight recorder (#72).
+		// Fleet-day aggregate for the flight recorder (#72). fallback:
+		// 'latest_active' serves the most recent day with any alerts when
+		// today is empty (only applies while date is omitted; the response
+		// 'date' self-describes any substitution).
 		getFleetDay: (opts?: {
 			date?: string;
 			tz?: string;
 			sampleLimit?: number;
+			fallback?: 'latest_active';
 		}): Promise<FleetDay> => {
 			const params = new URLSearchParams();
 			if (opts?.date) params.set('date', opts.date);
 			if (opts?.tz) params.set('tz', opts.tz);
 			if (opts?.sampleLimit) params.set('sample_limit', String(opts.sampleLimit));
+			if (opts?.fallback && !opts?.date) params.set('fallback', opts.fallback);
 			const qs = params.toString();
 			return request<FleetDay>(`/analytics/fleet-day${qs ? `?${qs}` : ''}`);
 		},

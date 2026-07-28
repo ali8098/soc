@@ -371,6 +371,16 @@ async def fleet_day(
     date: date_type | None = Query(None, description="Local date; default today"),
     tz: str = Query("UTC", max_length=64),
     sample_limit: int = Query(500, ge=1, le=2000),
+    fallback: str | None = Query(
+        None,
+        description=(
+            "'latest_active': when TODAY (date omitted) has zero alerts, "
+            "serve the most recent local day that has any, up to 30 days "
+            "back. Never applies to an explicit date — an empty requested "
+            "day is the honest answer. The response's 'date' self-describes "
+            "any substitution."
+        ),
+    ),
 ) -> FleetDayResponse:
     identity = current_identity(request)
     if identity is None:
@@ -388,6 +398,46 @@ async def fleet_day(
         p: dict[str, Any] = {"s": start, "e": end, "tz": tz, "mssp": _caller_is_mssp(identity)}
 
         server_now = (await db.execute(text("SELECT now()"))).scalar_one()
+
+        # Latest-active-day fallback (Codex-adjudicated, zero-only rule):
+        # sparse-but-nonzero today ALWAYS wins — one alert means the day
+        # has evidence; substitution on any threshold would be a hidden
+        # editorial model. 'Active' is alert-anchored (the film and map
+        # are built from arrivals, never closes/vetoes/spend).
+        if fallback == "latest_active" and date is None:
+            today_n = (
+                await db.execute(
+                    text(
+                        """
+                        SELECT COUNT(*)::int AS n FROM alerts
+                        WHERE first_event_at >= :s AND first_event_at < :e
+                        """
+                    ),
+                    p,
+                )
+            ).mappings().one()["n"]
+            if int(today_n) == 0:
+                last_at = (
+                    await db.execute(
+                        text(
+                            """
+                            SELECT MAX(first_event_at) AS t FROM alerts
+                            -- Anchor the 30-day lookback to today's local
+                            -- midnight (:s), not now(): the eligible range
+                            -- must not shrink as the day progresses.
+                            WHERE first_event_at >= CAST(:s AS timestamptz)
+                                                      - interval '30 days'
+                              AND first_event_at < :s
+                            """
+                        ),
+                        p,
+                    )
+                ).mappings().one()["t"]
+                if last_at is not None:
+                    day, start, end = _resolve_day_window(
+                        tz, last_at.astimezone(ZoneInfo(tz)).date()
+                    )
+                    p["s"], p["e"] = start, end
 
         alerts_row = (
             await db.execute(
