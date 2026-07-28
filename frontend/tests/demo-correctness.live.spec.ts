@@ -213,7 +213,9 @@ test('plan 2: auth + tenant-pinned session survives reload', async ({ page }) =>
 
 test('plan 3+17: fleet-day internal consistency + tz day window', async ({ page }) => {
 	await login(page);
-	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}`);
+	// The day the panel actually SHOWS: with the latest-active fallback,
+	// an empty today is substituted — oracles must match the shown day.
+	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}&fallback=latest_active`);
 
 	// Aggregate identities — with the honest cross-day caveat: dots bin by
 	// ARRIVAL day (outcome = the investigation's current state) while the
@@ -299,7 +301,9 @@ test('plan 6+19: replay counters start from cumulative-at-playhead, not final to
 	await login(page);
 	await page.goto('/analytics');
 	await expect(page.getByTestId('fleet-panel')).toBeVisible({ timeout: 20000 });
-	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}`);
+	// The day the panel actually SHOWS: with the latest-active fallback,
+	// an empty today is substituted — oracles must match the shown day.
+	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}&fallback=latest_active`);
 
 	// Restart the film and pause immediately near t=0.
 	await page.getByTestId('fleet-play').click();
@@ -331,7 +335,9 @@ test('plan 7+8+9: monotonic accumulation, exact convergence, label/rail agreemen
 	await login(page);
 	await page.goto('/analytics');
 	await expect(page.getByTestId('fleet-panel')).toBeVisible({ timeout: 20000 });
-	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}`);
+	// The day the panel actually SHOWS: with the latest-active fallback,
+	// an empty today is substituted — oracles must match the shown day.
+	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}&fallback=latest_active`);
 
 	await page.getByTestId('fleet-play').click(); // restart from 0
 	// Sample the closed counter over the film: must never decrease.
@@ -375,7 +381,9 @@ test('plan 10: veto rail reveals with the playhead and lists real rulings', asyn
 	await login(page);
 	await page.goto('/analytics');
 	await expect(page.getByTestId('fleet-panel')).toBeVisible({ timeout: 20000 });
-	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}`);
+	// The day the panel actually SHOWS: with the latest-active fallback,
+	// an empty today is substituted — oracles must match the shown day.
+	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}&fallback=latest_active`);
 	test.skip(day.recent_vetoes.length === 0, 'fixture: no vetoes on the current day');
 
 	const vetoCard = page.locator('.card', { hasText: 'Guard vetoes' }).last();
@@ -400,7 +408,9 @@ test('plan 11: drill-down — veto rail row opens that investigation in replay',
 	await login(page);
 	await page.goto('/analytics');
 	await expect(page.getByTestId('fleet-panel')).toBeVisible({ timeout: 20000 });
-	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}`);
+	// The day the panel actually SHOWS: with the latest-active fallback,
+	// an empty today is substituted — oracles must match the shown day.
+	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}&fallback=latest_active`);
 	test.skip(day.recent_vetoes.length === 0, 'fixture: no vetoes on the current day');
 	const target = day.recent_vetoes[0].investigation_id;
 
@@ -519,7 +529,9 @@ test('plan 16: pending reviews queue equals its API and the dashboard KPI', asyn
 
 test('plan 20: fixture health — the demo day is populated and replayable', async ({ page }) => {
 	await login(page);
-	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}`);
+	// The day the panel actually SHOWS: with the latest-active fallback,
+	// an empty today is substituted — oracles must match the shown day.
+	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}&fallback=latest_active`);
 	expect(day.ingested, 'demo day has no alerts — reseed needed').toBeGreaterThan(0);
 	expect(day.dots.length, 'demo day has no dots').toBeGreaterThan(0);
 	expect(
