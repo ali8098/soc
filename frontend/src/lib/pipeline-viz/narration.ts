@@ -3,6 +3,7 @@
 // import time — see the warning in $lib/stores).
 
 import { m } from '$lib/paraglide/messages';
+import { guardReasonsLabel, guardStageLabel } from './guardLabels';
 import type { Beat } from './types';
 
 const pct = (v: unknown): number =>
@@ -40,7 +41,7 @@ export function beatText(beat: Beat): string {
 					to: String(d.decision_out ?? '?')
 				});
 			if (effect === 'interrupt') return m.replay_beat_guard_interrupt();
-			return m.replay_beat_guard_pass({ stage: String(d.stage ?? '?') });
+			return m.replay_beat_guard_pass({ stage: guardStageLabel(String(d.stage ?? '')) });
 		}
 		case 'closed':
 			return m.replay_beat_closed({ path: String(d.path ?? '?') });
@@ -61,7 +62,7 @@ export function beatDetail(beat: Beat): string | null {
 		case 'policy': {
 			const fired = Array.isArray(d.vetoes_fired) ? d.vetoes_fired : [];
 			if (fired.length > 0)
-				return m.replay_detail_vetoes_fired({ vetoes: fired.map(String).join(', ') });
+				return m.replay_detail_vetoes_fired({ vetoes: guardReasonsLabel(fired.map(String)) });
 			return null;
 		}
 		case 'supervisor':
@@ -72,7 +73,7 @@ export function beatDetail(beat: Beat): string | null {
 			return d.threat_assessment ? String(d.threat_assessment) : null;
 		case 'guard': {
 			const fired = Array.isArray(d.fired) ? d.fired : [];
-			return fired.length > 0 ? fired.map(String).join(', ') : null;
+			return fired.length > 0 ? guardReasonsLabel(fired.map(String)) : null;
 		}
 		case 'closed':
 			return d.reason ? String(d.reason) : null;

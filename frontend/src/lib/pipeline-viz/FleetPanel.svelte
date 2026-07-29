@@ -17,6 +17,7 @@
 		scheduleTotals,
 		type FleetScheduleEntry
 	} from './fleetSchedule';
+	import { guardReasonsLabel, guardStageLabel } from './guardLabels';
 	import { createServerClock } from './serverClock';
 	import { createTimeline } from './timeline';
 	import type { FleetDay, FleetLive } from './types';
@@ -480,10 +481,9 @@
 								<span class="text-[0.65rem] uppercase tracking-wider opacity-50 block">{m.fleet_open()}</span>
 								<span class="text-xl font-mono tabular-nums">{formatNumber(day.still_open)}</span>
 							</div>
-							<div>
-								<span class="text-[0.65rem] uppercase tracking-wider opacity-50 block">{m.fleet_spend()}</span>
-								<span class="text-xl font-mono tabular-nums">${day.dollars_used.toFixed(0)}</span>
-							</div>
+							<!-- Model spend deliberately not shown here: cost is
+							     MSSP-facing curation state (visibility adjudication),
+							     and on scripted-playback demo tenants it reads $0. -->
 						{/if}
 					</div>
 				</div>
@@ -497,11 +497,12 @@
 							{#each visibleVetoes as veto (veto.investigation_id + veto.at)}
 								<button
 									type="button"
-									class="block w-full text-left text-xs font-mono border-b border-surface-500/20 pb-1 hover:opacity-80"
+									class="block w-full text-left text-xs border-b border-surface-500/20 pb-1 hover:opacity-80"
+									title="{veto.stage ?? 'guard'}: {veto.fired.join(', ')}"
 									on:click={() => void localizedGoto(`/investigations/${veto.investigation_id}?view=replay`)}
 								>
-									<span class="text-warning-500">{veto.stage ?? 'guard'}</span>
-									<span class="text-error-500 block">{veto.fired.join(', ')}</span>
+									<span class="text-warning-500">{guardStageLabel(veto.stage)}</span>
+									<span class="text-error-500 block">{guardReasonsLabel(veto.fired)}</span>
 								</button>
 							{/each}
 						</div>
