@@ -11,10 +11,11 @@ investigation id; ``sample_rate`` is disclosed so the UI can say
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import date as date_type
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -51,11 +52,30 @@ def _resolve_day_window(
     """Local-day window [start, end) for a tz; today when date is None."""
     try:
         zone = ZoneInfo(tz)
-    except Exception:
+    except (ZoneInfoNotFoundError, ValueError):
+        # A bad zone key or malformed string is a client problem (400). A
+        # corrupt tz database or import failure is not, so let anything else
+        # surface as a 500 rather than mislabel a server fault as user error.
         raise HTTPException(400, f"unknown timezone: {tz}") from None
     day = date or datetime.now(zone).date()
     start = datetime(day.year, day.month, day.day, tzinfo=zone)
     return day, start, start + timedelta(days=1)
+
+
+def _hour_histogram(timestamps: Iterable[datetime], zone: tzinfo) -> list[int]:
+    """24 local-hour buckets for aware timestamps, bucketed in Python.
+
+    Done here rather than via SQL ``extract(hour FROM ts AT TIME ZONE :tz)``
+    because Postgres' tz catalog rejects legacy IANA backward aliases (e.g.
+    ``America/Buenos_Aires``) that Python's bundled ``tzdata`` resolves. A
+    browser reporting such a legacy zone would otherwise pass the Python
+    validation above and then 500 in the histogram query. Converting here keeps
+    the tzdata dependency the single source of zone truth for the endpoint.
+    """
+    hist = [0] * 24
+    for ts in timestamps:
+        hist[ts.astimezone(zone).hour] += 1
+    return hist
 
 
 async def _close_counts(db: Any, p: dict[str, Any]) -> dict[str, int]:
@@ -392,10 +412,11 @@ async def fleet_day(
         raise HTTPException(403, "tenant scope required")
 
     day, start, end = _resolve_day_window(tz, date)
+    zone = start.tzinfo  # the resolved (tzdata-backed) ZoneInfo; reused below
 
     sm = get_app_sessionmaker()
     async with sm() as db, tenant_context(db, tenant_id):
-        p: dict[str, Any] = {"s": start, "e": end, "tz": tz, "mssp": _caller_is_mssp(identity)}
+        p: dict[str, Any] = {"s": start, "e": end, "mssp": _caller_is_mssp(identity)}
 
         server_now = (await db.execute(text("SELECT now()"))).scalar_one()
 
@@ -452,24 +473,22 @@ async def fleet_day(
             )
         ).mappings().one()
 
-        hist_rows = (
+        # Local-hour histogram bucketed in Python from the resolved zone (see
+        # _hour_histogram): Postgres' catalog rejects legacy tz aliases, so the
+        # bucketing must not be done in SQL with the request timezone.
+        ts_rows = (
             await db.execute(
                 text(
                     """
-                    SELECT extract(hour FROM first_event_at AT TIME ZONE :tz)::int AS h,
-                           COUNT(*)::int AS n
+                    SELECT first_event_at
                     FROM alerts
                     WHERE first_event_at >= :s AND first_event_at < :e
-                    GROUP BY h
                     """
                 ),
                 p,
             )
-        ).mappings().all()
-        histogram = [0] * 24
-        for r in hist_rows:
-            if 0 <= int(r["h"]) < 24:
-                histogram[int(r["h"])] = int(r["n"])
+        ).scalars().all()
+        histogram = _hour_histogram(ts_rows, zone)
 
         closes = await _close_counts(db, p)
         vetoes = await _guard_veto_count(db, p)

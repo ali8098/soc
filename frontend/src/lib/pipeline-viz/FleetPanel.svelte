@@ -90,6 +90,7 @@
 				fallback: wantFallback ? 'latest_active' : undefined
 			});
 			if (req !== dayReq) return; // superseded by a newer request
+			error = null; // a recovered load clears a prior transient error banner
 			if (initial || !$timeline.playing) {
 				applyDay(fresh);
 				pendingDay = null;
