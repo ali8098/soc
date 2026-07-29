@@ -488,7 +488,7 @@
 					</div>
 				</div>
 
-				<div class="card p-4">
+				<div class="card p-4" data-testid="fleet-veto-rail">
 					<h3 class="h5 mb-2">{m.fleet_vetoes_title()}</h3>
 					{#if visibleVetoes.length === 0}
 						<p class="text-sm opacity-60">{m.fleet_none_yet()}</p>

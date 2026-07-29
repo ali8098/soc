@@ -284,7 +284,7 @@ test('plan 4+18: dashboard live head matches fleet-live; no 4xx from UI fleet ca
 	closeTo(statKey(rail, 'alerts in'), live.ingested, 5, 'ingested');
 	closeTo(statKey(rail, 'closed'), closedOf(live), 5, 'closed');
 	closeTo(statKey(rail, 'human'), live.escalated, 3, 'escalated');
-	closeTo(statKey(rail, 'vetoes'), live.guard_vetoes, 3, 'vetoes');
+	closeTo(statKey(rail, 'blocked'), live.guard_vetoes, 3, 'vetoes');
 	// in_flight covers open_by_stage
 	const stageSum = Object.values(live.open_by_stage).reduce((a, b) => a + b, 0);
 	expect(live.in_flight).toBeGreaterThanOrEqual(stageSum);
@@ -367,7 +367,7 @@ test('plan 7+8+9: monotonic accumulation, exact convergence, label/rail agreemen
 	expect(statKey(rail, 'alerts in')).toBe(day.ingested);
 	expect(statKey(rail, 'closed')).toBe(closedOf(day));
 	expect(statKey(rail, 'human')).toBe(day.escalated);
-	expect(statKey(rail, 'vetoes')).toBe(day.guard_vetoes);
+	expect(statKey(rail, 'blocked')).toBe(day.guard_vetoes);
 	expect(statKey(rail, 'open')).toBe(day.still_open);
 
 	const svg = page.getByTestId('fleet-panel').locator('svg').first();
@@ -386,7 +386,7 @@ test('plan 10: veto rail reveals with the playhead and lists real rulings', asyn
 	const day = await getJson<FleetDay>(page, `/api/analytics/fleet-day?tz=${TZ}&fallback=latest_active`);
 	test.skip(day.recent_vetoes.length === 0, 'fixture: no vetoes on the current day');
 
-	const vetoCard = page.locator('.card', { hasText: 'Guard vetoes' }).last();
+	const vetoCard = page.getByTestId('fleet-veto-rail');
 	// At t=0 (restart + immediate pause): rail should not already show
 	// every ruling (unless all vetoes genuinely land at t≈0).
 	await page.getByTestId('fleet-play').click();
@@ -414,7 +414,7 @@ test('plan 11: drill-down — veto rail row opens that investigation in replay',
 	test.skip(day.recent_vetoes.length === 0, 'fixture: no vetoes on the current day');
 	const target = day.recent_vetoes[0].investigation_id;
 
-	const vetoCard = page.locator('.card', { hasText: 'Guard vetoes' }).last();
+	const vetoCard = page.getByTestId('fleet-veto-rail');
 	await vetoCard.locator('button').first().click();
 	await page.waitForURL((u) => u.pathname.includes('/investigations/'), { timeout: 15000 });
 	expect(page.url()).toContain(target);
