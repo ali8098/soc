@@ -92,7 +92,7 @@ test.describe('Investigation replay (flight recorder #72)', () => {
 		await expect(page.locator('[data-node="guard"]')).toHaveAttribute('data-state', 'veto');
 		await expect(page.locator('[data-node="human"]')).toHaveAttribute('data-state', 'warn');
 		// Raw codes are humanized now (guardLabels): assert the friendly label.
-		await expect(page.getByTestId('narration-rail')).toContainText('No authorization on record');
+		await expect(page.getByTestId('narration-rail')).toContainText('No approved authorization');
 	});
 
 	test('shows the honest empty state for pre-instrumentation investigations', async ({ page }) => {
@@ -299,7 +299,7 @@ test.describe('Fleet flight recorder on analytics (#72)', () => {
 		await expect(stats).toContainText('84');
 		await expect(stats).toContainText('14');
 		// Veto rail shows analyst-friendly labels; raw code lives in the tooltip.
-		await expect(page.getByTestId('fleet-panel')).toContainText('No authorization on record');
+		await expect(page.getByTestId('fleet-panel')).toContainText('No approved authorization');
 		// Sampling disclosure must be on-canvas when sample_rate < 1.
 		await expect(page.getByTestId('fleet-panel')).toContainText('1 in 3');
 	});
