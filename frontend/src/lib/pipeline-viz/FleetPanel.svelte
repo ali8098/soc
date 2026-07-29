@@ -379,7 +379,7 @@
 	{:else if day}
 		<div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
 			<div class="xl:col-span-2">
-				<div class="card p-3">
+				<div class="card p-3 film-card">
 					{#if showLiveHead}
 						<FleetMap
 							{day}
@@ -405,7 +405,7 @@
 						</div>
 					{:else}
 						<FleetMap {day} {schedule} t={$timeline.t} on:drill={drill} />
-						<div class="flex items-center gap-2 mt-2">
+						<div class="flex items-center gap-2 mt-2 transport-row">
 							<button
 								type="button"
 								class="btn btn-sm variant-soft-primary font-mono"
@@ -534,6 +534,29 @@
 	@media (prefers-reduced-motion: reduce) {
 		.live-dot {
 			animation: none;
+		}
+	}
+	/* Transport bar reveals on hover/focus of the film card — the map is
+	   the star; controls appear when reached for. Opacity-only (never
+	   display:none) so keyboard focus and assistive tech always land on
+	   real, interactive controls, and focus-within reveals for tabbing. */
+	.film-card .transport-row {
+		opacity: 0;
+		transition: opacity 150ms ease;
+	}
+	.film-card:hover .transport-row,
+	.film-card:focus-within .transport-row {
+		opacity: 1;
+	}
+	/* No hover on touch devices: keep the controls always visible. */
+	@media (hover: none) {
+		.film-card .transport-row {
+			opacity: 1;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.film-card .transport-row {
+			transition: none;
 		}
 	}
 </style>
