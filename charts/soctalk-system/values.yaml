@@ -121,6 +121,15 @@ tenantProvisioning:
   # tenant chart default (verify on).
   l1VerifySsl: ""
   wazuhChartPath: /app/charts/wazuh
+  # StorageClass the 'persistent' Wazuh profile provisions its manager and
+  # indexer PVCs from. Checked during provisioning preflight and pushed into
+  # the wazuh chart's storage.storageClass, so it must name a class that
+  # actually provisions on THIS cluster: 'standard' is the GKE / minikube
+  # convention, K3s ships 'local-path', and CSI drivers use their own names
+  # (kubectl get storageclass). Empty is NOT "cluster default" -- it falls
+  # back to 'standard'. Only the 'persistent' profile reads this; 'poc'
+  # takes its class from charts/wazuh/values.poc.yaml.
+  persistentStorageClass: standard
   adapterImageRepo: ''
   adapterImageTag: '0.2.0'
   # runs-worker image (per-tenant L2 LangGraph worker). Same Python

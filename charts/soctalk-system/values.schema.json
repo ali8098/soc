@@ -398,6 +398,10 @@
         "wazuhChartPath": {
           "type": "string"
         },
+        "persistentStorageClass": {
+          "type": "string",
+          "description": "StorageClass the 'persistent' Wazuh profile provisions manager + indexer PVCs from. Checked at provisioning preflight and pushed into the wazuh chart's storage.storageClass. 'standard' is the GKE/minikube convention; K3s ships 'local-path'. Empty falls back to 'standard' - it does not mean 'cluster default'."
+        },
         "adapterImageRepo": {
           "type": "string"
         },

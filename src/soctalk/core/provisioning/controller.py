@@ -162,6 +162,13 @@ class ControllerSettings:
     # Profile-specific storage class overrides (controller → wazuh chart).
     # ``persistent`` needs a real provisioner; ``poc`` uses whatever the
     # chart default gives it (usually ``local-path`` on k3s/k3d).
+    # Operator-settable through the soctalk-system chart
+    # (``tenantProvisioning.persistentStorageClass`` → the env var read in
+    # ``from_env``): ``standard`` is the GKE / minikube name, K3s ships
+    # ``local-path``. Empty is normalized back to ``standard`` rather than
+    # meaning "use the cluster default" -- the wazuh PVC templates render
+    # ``storageClassName`` unconditionally, and an empty value there tells
+    # Kubernetes to DISABLE dynamic provisioning.
     persistent_storage_class: str = "standard"
     # Pod-readiness wait settings.
     readiness_poll_interval_seconds: float = 3.0
@@ -208,8 +215,11 @@ class ControllerSettings:
                 "SOCTALK_CERT_ISSUER", "letsencrypt-prod"
             ),
             wait_timeout=os.getenv("SOCTALK_HELM_TIMEOUT", "15m"),
-            persistent_storage_class=os.getenv(
-                "SOCTALK_PERSISTENT_STORAGE_CLASS", "standard"
+            persistent_storage_class=(
+                os.getenv(
+                    "SOCTALK_PERSISTENT_STORAGE_CLASS", "standard"
+                ).strip()
+                or "standard"
             ),
             tenant_network_policies_enabled=(
                 os.getenv("SOCTALK_TENANT_NETWORK_POLICIES_ENABLED", "1")
@@ -659,6 +669,23 @@ class TenantController:
     # Provisioning steps
     # ------------------------------------------------------------------
 
+    async def _storage_class_hint(self) -> str:
+        """Best-effort ``; available: ...`` suffix for the preflight error.
+
+        Never raises. It only decorates a message that is already an
+        error, so an RBAC gap -- or a client that doesn't implement the
+        call -- must not mask the real StorageClass problem. Naming what
+        the cluster actually has turns a dead-end error into a one-line
+        fix (``tenantProvisioning.persistentStorageClass``).
+        """
+        try:
+            names = await self.k8s.list_storage_classes()
+        except Exception:  # noqa: BLE001
+            return ""
+        if not names:
+            return "; cluster has no storage classes at all"
+        return f"; available: {', '.join(sorted(names))}"
+
     async def _step_preflight(self, ctx: _StepContext) -> None:
         """Fail fast on cluster prerequisites before any tenant mutation."""
         # Kube API reachable (read a benign object the controller SA owns).
@@ -691,9 +718,10 @@ class TenantController:
                     step="preflight",
                 ) from e
             if not ok:
+                hint = await self._storage_class_hint()
                 raise ProvisionError(
                     f"storage class '{sc}' not present on cluster "
-                    "(required by persistent profile)",
+                    f"(required by persistent profile){hint}",
                     step="preflight",
                 )
 

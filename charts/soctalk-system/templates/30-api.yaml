@@ -461,6 +461,8 @@ spec:
             {{- end }}
             - name: SOCTALK_WAZUH_CHART_PATH
               value: {{ .Values.tenantProvisioning.wazuhChartPath | quote }}
+            - name: SOCTALK_PERSISTENT_STORAGE_CLASS
+              value: {{ .Values.tenantProvisioning.persistentStorageClass | quote }}
           resources:
             requests:
               cpu: {{ .Values.resources.api.requests.cpu | quote }}

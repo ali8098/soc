@@ -152,6 +152,20 @@ class K8sClient:
                 return False
             raise
 
+    async def list_storage_classes(self) -> list[str]:
+        """Return the names of every registered StorageClass.
+
+        Only used to enrich the preflight failure message -- the
+        controller never picks a class on the operator's behalf. The
+        controller ServiceAccount already holds ``list`` on
+        ``storage.k8s.io/storageclasses``.
+        """
+        from kubernetes import client as k8s
+
+        storage = k8s.StorageV1Api()
+        result = await self._run(storage.list_storage_class)
+        return [sc.metadata.name for sc in result.items]
+
     async def read_pods(self, namespace: str) -> list[dict[str, Any]]:
         """Return a lightweight summary of pods in a namespace."""
         result = await self._run(self._core.list_namespaced_pod, namespace)
