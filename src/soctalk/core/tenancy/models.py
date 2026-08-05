@@ -398,6 +398,37 @@ class IntegrationConfig(SQLModel, table=True):
     slack_channel: str | None = Field(default=None, max_length=100)
     slack_notify_on_escalation: bool = Field(default=True)
     slack_notify_on_verdict: bool = Field(default=True)
+    
+
+
+
+# --- Insert into IntegrationConfig, right after the existing
+# --- "slack_notify_on_verdict" field and before "# LLM config" ---
+
+    # Zeek
+    zeek_enabled: bool = Field(default=False)
+    zeek_log_path: str | None = Field(default=None, max_length=500)
+    # Suricata
+    suricata_enabled: bool = Field(default=False)
+    suricata_log_path: str | None = Field(default=None, max_length=500)
+    suricata_ingest_all_events: bool = Field(default=False)
+    # DFIR-IRIS
+    dfir_iris_enabled: bool = Field(default=False)
+    dfir_iris_url: str | None = Field(default=None, max_length=500)
+    dfir_iris_verify_ssl: bool = Field(default=True)
+    # Plaintext at rest — same compromise as wazuh_password_plain /
+    # llm_api_key_plain above; KMS/Fernet hardening is a follow-up.
+    dfir_iris_api_key_plain: str | None = Field(default=None, max_length=4096)
+    # Velociraptor
+    velociraptor_enabled: bool = Field(default=False)
+    velociraptor_api_client_config_path: str | None = Field(default=None, max_length=500)
+    # Shuffle
+    shuffle_enabled: bool = Field(default=False)
+    shuffle_webhook_url: str | None = Field(default=None, max_length=2048)
+
+
+
+
     # LLM config (per-tenant BYO)
     llm_provider: str = Field(default="openai-compatible", max_length=32)
     llm_base_url: str = Field(default="https://api.openai.com/v1", max_length=500)

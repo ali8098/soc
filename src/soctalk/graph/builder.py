@@ -28,6 +28,8 @@ from soctalk.triage_policy.operational import operational_close_vetoes
 from soctalk.workers.cortex import cortex_worker_node
 from soctalk.workers.misp import misp_worker_node
 from soctalk.workers.thehive import thehive_worker_node
+from soctalk.workers.dfir_iris import dfir_iris_worker_node
+from soctalk.workers.velociraptor import velociraptor_worker_node
 from soctalk.workers.wazuh import wazuh_worker_node
 
 logger = structlog.get_logger()
@@ -135,7 +137,11 @@ def route_from_supervisor(state: dict[str, Any]) -> Literal[
 
     logger.debug("routing_from_supervisor", action=action)
 
-    if action == "INVESTIGATE":
+    if action == "HUNT":
+        return "velociraptor_worker"
+    elif action == "QUERY_IRIS":
+        return "dfir_iris_worker"
+    elif action == "INVESTIGATE":
         return "wazuh_worker"
     elif action == "ENRICH":
         return "cortex_worker"
@@ -311,6 +317,9 @@ def build_secops_graph(
     graph.add_node("operational_close", operational_close_node)
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("wazuh_worker", wazuh_worker_node)
+    graph.add_node("dfir_iris_worker", dfir_iris_worker_node)
+    graph.add_node("velociraptor_worker", velociraptor_worker_node)
+
     graph.add_node("cortex_worker", cortex_worker_node)
     graph.add_node("misp_worker", misp_worker_node)
     graph.add_node(GATHER_AUTHORIZATION_CONTEXT, gather_authorization_context_node)
@@ -341,6 +350,8 @@ def build_secops_graph(
         {
             "wazuh_worker": "wazuh_worker",
             "cortex_worker": "cortex_worker",
+            "dfir_iris_worker": "dfir_iris_worker",
+            "velociraptor_worker": "velociraptor_worker",            
             "misp_worker": "misp_worker",
             GATHER_AUTHORIZATION_CONTEXT: GATHER_AUTHORIZATION_CONTEXT,
             "verdict": "verdict",
@@ -351,6 +362,9 @@ def build_secops_graph(
     # Workers return to supervisor
     graph.add_edge("wazuh_worker", "supervisor")
     graph.add_edge("cortex_worker", "supervisor")
+    graph.add_edge("dfir_iris_worker", "supervisor")
+    graph.add_edge("velociraptor_worker", "supervisor")
+
     graph.add_edge("misp_worker", "supervisor")
 
     # The required triage policy step returns to the supervisor, which re-proposes with

@@ -19,6 +19,9 @@
 	let cortex_api_key_configured = false;
 	let thehive_api_key_configured = false;
 	let misp_api_key_configured = false;
+    let velociraptor_credentials_configured = false;
+    let dfir_iris_api_key_configured = false;
+    let shuffle_webhook_configured = false;
 	let slack_webhook_configured = false;
 
 	// Local form state for LLM settings
@@ -53,6 +56,27 @@
 	let misp_url = '';
 	let misp_verify_ssl = true;
 
+    //velociraptor
+    let velociraptor_enabled = false;
+    let velociraptor_api_client_config_path='';
+
+    // DFIR-IRIS
+    let dfir_iris_enabled = false;
+    let dfir_iris_url = '';
+    let dfir_iris_verify_ssl = true;
+
+    // Shuffle
+    let shuffle_enabled = false;
+    let shuffle_webhook_url = '';
+
+    // Zeek
+    let zeek_enabled = false;
+    let zeek_ingest_path = '';
+
+    // Suricata
+    let suricata_enabled = false;
+    let suricata_ingest_path = '';
+
 	// Slack
 	let slack_enabled = false;
 	let slack_channel = '';
@@ -69,6 +93,7 @@
 		cortex_api_key_configured = serverSettings.cortex_api_key_configured;
 		thehive_api_key_configured = serverSettings.thehive_api_key_configured;
 		misp_api_key_configured = serverSettings.misp_api_key_configured;
+        velociraptor_credentials_configured = serverSettings.velociraptor_credentials_configured;
 		slack_webhook_configured = serverSettings.slack_webhook_configured;
 
 		// LLM
@@ -101,6 +126,29 @@
 		misp_enabled = serverSettings.misp_enabled;
 		misp_url = serverSettings.misp_url || '';
 		misp_verify_ssl = serverSettings.misp_verify_ssl;
+
+        // Velociraptor
+        velociraptor_enabled = serverSettings.velociraptor_enabled;
+        velociraptor_api_client_config_path = serverSettings.velociraptor_api_client_config_path || '';
+
+        // DFIR-IRIS
+        dfir_iris_api_key_configured = serverSettings.dfir_iris_api_key_configured;
+        dfir_iris_enabled = serverSettings.dfir_iris_enabled;
+        dfir_iris_url = serverSettings.dfir_iris_url || '';
+        dfir_iris_verify_ssl = serverSettings.dfir_iris_verify_ssl;
+
+        // Shuffle
+        shuffle_webhook_configured = serverSettings.shuffle_webhook_configured;
+        shuffle_enabled = serverSettings.shuffle_enabled;
+        shuffle_webhook_url = serverSettings.shuffle_webhook_url || '';
+
+        // Zeek
+        zeek_enabled = serverSettings.zeek_enabled;
+        zeek_ingest_path = serverSettings.zeek_ingest_path || '';
+
+        // Suricata
+        suricata_enabled = serverSettings.suricata_enabled;
+        suricata_ingest_path = serverSettings.suricata_ingest_path || '';
 
 		// Slack
 		slack_enabled = serverSettings.slack_enabled;
@@ -175,6 +223,27 @@
 				misp_enabled,
 				misp_url: misp_url || null,
 				misp_verify_ssl,
+
+				// Velociraptor
+				velociraptor_enabled,
+				velociraptor_api_client_config_path: velociraptor_api_client_config_path || null,
+
+				// DFIR-IRIS
+				dfir_iris_enabled,
+				dfir_iris_url: dfir_iris_url || null,
+				dfir_iris_verify_ssl,
+
+				// Shuffle
+				shuffle_enabled,
+				shuffle_webhook_url: shuffle_webhook_url || null,
+
+				// Zeek
+				zeek_enabled,
+				zeek_ingest_path: zeek_ingest_path || null,
+
+				// Suricata
+				suricata_enabled,
+				suricata_ingest_path: suricata_ingest_path || null,
 
 				// Slack
 				slack_enabled,
@@ -589,6 +658,183 @@
 						<SlideToggle name="misp_verify_ssl" bind:checked={misp_verify_ssl} disabled={readonly || !$canEditSettings}>
 							{m.adm_verify_ssl()}
 						</SlideToggle>
+					</div>
+				</div>
+			{/if}
+		</div>
+
+		<!-- Velociraptor Integration -->
+		<div class="card p-6 space-y-4">
+			<div class="flex items-center justify-between border-b border-surface-500/30 pb-2">
+				<div>
+					<div class="flex items-center gap-2">
+						<h3 class="h4">{m.adm_section_velociraptor()}</h3>
+						{#if getIntegrationSource('velociraptor_') === 'env'}
+							<span class="badge variant-soft text-xs">{m.adm_badge_env()}</span>
+						{:else if getIntegrationSource('velociraptor_') === 'db'}
+							<span class="badge variant-filled-warning text-xs">{m.adm_badge_override()}</span>
+						{/if}
+					</div>
+					<p class="text-sm opacity-60">{m.adm_velociraptor_desc()}</p>
+				</div>
+				<SlideToggle name="velociraptor_enabled" bind:checked={velociraptor_enabled} disabled={readonly || !$canEditSettings} />
+			</div>
+
+			{#if velociraptor_enabled}
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+					<div class="md:col-span-2">
+						<label class="label">
+							<span class="font-medium">{m.adm_field_velociraptor_config_path()}</span>
+							<input
+								type="text"
+								class="input"
+								placeholder="/etc/soctalk/velociraptor/api_client.yaml"
+								bind:value={velociraptor_api_client_config_path}
+								disabled={readonly || !$canEditSettings}
+							/>
+						</label>
+					</div>
+					<div class="md:col-span-2 text-sm opacity-70">
+						{velociraptor_credentials_configured ? m.adm_credentials_configured() : m.adm_credentials_missing()}
+					</div>
+				</div>
+			{/if}
+		</div>
+
+		<!-- DFIR-IRIS Integration -->
+		<div class="card p-6 space-y-4">
+			<div class="flex items-center justify-between border-b border-surface-500/30 pb-2">
+				<div>
+					<div class="flex items-center gap-2">
+						<h3 class="h4">{m.adm_section_dfir_iris()}</h3>
+						{#if getIntegrationSource('dfir_iris_') === 'env'}
+							<span class="badge variant-soft text-xs">{m.adm_badge_env()}</span>
+						{:else if getIntegrationSource('dfir_iris_') === 'db'}
+							<span class="badge variant-filled-warning text-xs">{m.adm_badge_override()}</span>
+						{/if}
+					</div>
+					<p class="text-sm opacity-60">{m.adm_dfir_iris_desc()}</p>
+				</div>
+				<SlideToggle name="dfir_iris_enabled" bind:checked={dfir_iris_enabled} disabled={readonly || !$canEditSettings} />
+			</div>
+
+			{#if dfir_iris_enabled}
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+					<div>
+						<label class="label">
+							<span class="font-medium">{m.adm_field_api_url()}</span>
+							<input
+								type="url"
+								class="input"
+								placeholder="https://iris.example.com"
+								bind:value={dfir_iris_url}
+								disabled={readonly || !$canEditSettings}
+							/>
+						</label>
+					</div>
+					<div class="md:col-span-2 text-sm opacity-70">
+						{dfir_iris_api_key_configured ? m.adm_api_key_configured() : m.adm_api_key_missing({ env: 'DFIR_IRIS_API_KEY' })}
+					</div>
+					<div class="flex items-center">
+						<SlideToggle name="dfir_iris_verify_ssl" bind:checked={dfir_iris_verify_ssl} disabled={readonly || !$canEditSettings}>
+							{m.adm_verify_ssl()}
+						</SlideToggle>
+					</div>
+				</div>
+			{/if}
+		</div>
+
+		<!-- Shuffle Integration -->
+		<div class="card p-6 space-y-4">
+			<div class="flex items-center justify-between border-b border-surface-500/30 pb-2">
+				<div>
+					<div class="flex items-center gap-2">
+						<h3 class="h4">{m.adm_section_shuffle()}</h3>
+						{#if getIntegrationSource('shuffle_') === 'env'}
+							<span class="badge variant-soft text-xs">{m.adm_badge_env()}</span>
+						{:else if getIntegrationSource('shuffle_') === 'db'}
+							<span class="badge variant-filled-warning text-xs">{m.adm_badge_override()}</span>
+						{/if}
+					</div>
+					<p class="text-sm opacity-60">{m.adm_shuffle_desc()}</p>
+				</div>
+				<SlideToggle name="shuffle_enabled" bind:checked={shuffle_enabled} disabled={readonly || !$canEditSettings} />
+			</div>
+
+			{#if shuffle_enabled}
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+					<div class="md:col-span-2 text-sm opacity-70">
+						{shuffle_webhook_configured ? m.adm_webhook_configured() : m.adm_webhook_missing()}
+					</div>
+				</div>
+			{/if}
+		</div>
+
+		<!-- Zeek Integration -->
+		<div class="card p-6 space-y-4">
+			<div class="flex items-center justify-between border-b border-surface-500/30 pb-2">
+				<div>
+					<div class="flex items-center gap-2">
+						<h3 class="h4">{m.adm_section_zeek()}</h3>
+						{#if getIntegrationSource('zeek_') === 'env'}
+							<span class="badge variant-soft text-xs">{m.adm_badge_env()}</span>
+						{:else if getIntegrationSource('zeek_') === 'db'}
+							<span class="badge variant-filled-warning text-xs">{m.adm_badge_override()}</span>
+						{/if}
+					</div>
+					<p class="text-sm opacity-60">{m.adm_zeek_desc()}</p>
+				</div>
+				<SlideToggle name="zeek_enabled" bind:checked={zeek_enabled} disabled={readonly || !$canEditSettings} />
+			</div>
+
+			{#if zeek_enabled}
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+					<div class="md:col-span-2">
+						<label class="label">
+							<span class="font-medium">{m.adm_field_ingest_path()}</span>
+							<input
+								type="text"
+								class="input"
+								placeholder="/var/log/zeek/current/conn.log"
+								bind:value={zeek_ingest_path}
+								disabled={readonly || !$canEditSettings}
+							/>
+						</label>
+					</div>
+				</div>
+			{/if}
+		</div>
+
+		<!-- Suricata Integration -->
+		<div class="card p-6 space-y-4">
+			<div class="flex items-center justify-between border-b border-surface-500/30 pb-2">
+				<div>
+					<div class="flex items-center gap-2">
+						<h3 class="h4">{m.adm_section_suricata()}</h3>
+						{#if getIntegrationSource('suricata_') === 'env'}
+							<span class="badge variant-soft text-xs">{m.adm_badge_env()}</span>
+						{:else if getIntegrationSource('suricata_') === 'db'}
+							<span class="badge variant-filled-warning text-xs">{m.adm_badge_override()}</span>
+						{/if}
+					</div>
+					<p class="text-sm opacity-60">{m.adm_suricata_desc()}</p>
+				</div>
+				<SlideToggle name="suricata_enabled" bind:checked={suricata_enabled} disabled={readonly || !$canEditSettings} />
+			</div>
+
+			{#if suricata_enabled}
+				<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+					<div class="md:col-span-2">
+						<label class="label">
+							<span class="font-medium">{m.adm_field_ingest_path()}</span>
+							<input
+								type="text"
+								class="input"
+								placeholder="/var/log/suricata/eve.json"
+								bind:value={suricata_ingest_path}
+								disabled={readonly || !$canEditSettings}
+							/>
+						</label>
 					</div>
 				</div>
 			{/if}

@@ -127,6 +127,32 @@ spec:
               value: {{ .minSeverity | quote }}
             {{- end }}
             {{- end }}
+            {{/*
+            Zeek log ingestion — disabled by default.
+            Enable via adapter.zeek.enabled=true in values.yaml or
+            per-tenant override. logPath must point to the Zeek logs
+            directory mounted into the adapter pod.
+            */}}
+            {{- with .Values.adapter.zeek }}
+            - name: ZEEK_ENABLED
+              value: {{ .enabled | default false | quote }}
+            - name: ZEEK_LOG_PATH
+              value: {{ .logPath | default "/opt/zeek/logs/current" | quote }}
+            {{- end }}
+            {{/*
+            Suricata EVE JSON ingestion — disabled by default.
+            Enable via adapter.suricata.enabled=true in values.yaml.
+            Set ingestAllEvents=1 to ingest flows/dns/http in addition
+            to alerts (recommended for full network visibility).
+            */}}
+            {{- with .Values.adapter.suricata }}
+            - name: SURICATA_ENABLED
+              value: {{ .enabled | default false | quote }}
+            - name: SURICATA_LOG_PATH
+              value: {{ .logPath | default "/var/log/suricata/eve.json" | quote }}
+            - name: SURICATA_INGEST_ALL_EVENTS
+              value: {{ .ingestAllEvents | default "0" | quote }}
+            {{- end }}
           resources:
             requests:
               cpu: {{ .Values.adapter.resources.requests.cpu | quote }}

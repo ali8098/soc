@@ -14,6 +14,12 @@ default ``typed_reason``): the override is justified because the target is an
 operator-configured notification connector — SocTalk hands a signed envelope to
 an endpoint the MSSP chose, it does not act on customer infrastructure. Any
 future capability that mutates external state MUST NOT copy this override.
+
+Shuffle (``notify_shuffle``) follows the same rationale as ``notify_webhook``:
+the target URL is operator-configured in tenant policy
+(``shuffle_webhook_url``), never in the playbook itself, so the playbook author
+can trigger a Shuffle workflow but cannot choose its target. AUTONOMOUS tier-0
+for the same blast-radius reasoning as ``notify_webhook``.
 """
 
 from __future__ import annotations
@@ -183,19 +189,70 @@ async def _notify_webhook(
         resp = await client.post(url, content=body, headers=headers)
     if resp.status_code >= 400:
         raise RuntimeError(f"webhook returned HTTP {resp.status_code}")
-    # The remote's request id (when offered) beats a bare status code as the
-    # audit chain's external reference.
     remote_ref = resp.headers.get("X-Request-Id") or resp.headers.get("Request-Id")
     return remote_ref or f"http:{resp.status_code}"
 
 
-def _resolve_endpoint(policy: dict[str, Any], endpoint_id: str) -> dict[str, Any]:
-    """Resolve an operator-configured action endpoint by id from tenant policy.
+async def _notify_shuffle(
+    db: AsyncSession, tenant_id: UUID, payload: dict[str, Any]
+) -> str | None:
+    """Tier-0: POST the signed envelope to the tenant's configured Shuffle webhook.
 
-    The playbook names an endpoint id + action, NEVER a URL — the operator owns
-    the id→url/secret mapping in the ``response_action_endpoints`` policy, so a
-    playbook author can request an action but can never choose its target
-    (the SSRF/exfil boundary, #49). Fails closed on an unknown/blank id."""
+    Shuffle is a SOAR platform that receives a webhook trigger and runs an
+    automated workflow. Same security model as ``notify_webhook``:
+    - URL comes from tenant policy (``shuffle_webhook_url``), never the playbook.
+    - Optional HMAC signature via ``shuffle_webhook_secret``.
+    - SSRF floor via ``assert_webhook_url_allowed``.
+    - AUTONOMOUS tier-0: operator chose the target, blast radius is a
+      notification/workflow trigger, not infrastructure mutation.
+
+    Shuffle expects a JSON body — we send the full SocTalk envelope so the
+    Shuffle workflow can branch on disposition, severity, MITRE tags, etc.
+    The ``X-SocTalk-Delivery`` header lets Shuffle dedupe replayed triggers.
+    """
+    import httpx
+
+    from soctalk.core.ir.policies import effective_policy
+
+    policy = await effective_policy(db, tenant_id)
+    url = str(policy.get("shuffle_webhook_url") or "").strip()
+    if not url:
+        raise ValueError(
+            "shuffle_webhook_url tenant policy is missing — configure the "
+            "Shuffle connector before activating a notify_shuffle playbook"
+        )
+    assert_webhook_url_allowed(url)
+
+    body_obj = {
+        "source": "soctalk",
+        "envelope": payload.get("envelope") or {},
+        "playbook": payload.get("playbook") or {},
+        "params": payload.get("params") or {},
+    }
+    body = canonical_json(body_obj).encode()
+    headers = {
+        "Content-Type": "application/json",
+        DELIVERY_HEADER: str(payload.get("delivery") or ""),
+    }
+    secret = str(policy.get("shuffle_webhook_secret") or "")
+    if secret:
+        headers[SIGNATURE_HEADER] = sign_webhook_body(secret, body)
+
+    async with httpx.AsyncClient(timeout=_WEBHOOK_TIMEOUT_SECONDS) as client:
+        resp = await client.post(url, content=body, headers=headers)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Shuffle webhook returned HTTP {resp.status_code}")
+
+    # Shuffle returns {"execution_id": "..."} on success — use it as external ref.
+    try:
+        remote_ref = resp.json().get("execution_id")
+    except Exception:  # noqa: BLE001
+        remote_ref = None
+    return remote_ref or f"http:{resp.status_code}"
+
+
+def _resolve_endpoint(policy: dict[str, Any], endpoint_id: str) -> dict[str, Any]:
+    """Resolve an operator-configured action endpoint by id from tenant policy."""
     registry = policy.get("response_action_endpoints") or {}
     if not isinstance(registry, dict):
         raise ValueError("response_action_endpoints policy is malformed")
@@ -213,12 +270,6 @@ async def _external_action(
 ) -> str | None:
     """Gated: POST the signed envelope + named action to an operator-configured
     action endpoint (the generic external-action connector, #49 phase 2).
-
-    Unlike ``notify_webhook`` (a single tenant webhook, tier-0), this resolves
-    one of many named endpoints and carries a named ``action`` — the seam where
-    concrete stack behavior (disable a Wazuh endpoint) lives OUTSIDE core, behind
-    the response-action contract. WRITE_EXTERNAL + TYPED_REASON: it is never
-    autonomous, so it only ever runs after a human approves the routed proposal.
     """
     import httpx
 
@@ -278,10 +329,19 @@ RESPONSE_CAPABILITIES: dict[str, ResponseCapability] = {
             handler=_notify_webhook,
         ),
         ResponseCapability(
+            name="notify_shuffle",
+            capability_class=CapabilityClass.WRITE_EXTERNAL,
+            approval=ApprovalPolicy.AUTONOMOUS,
+            description=(
+                "POST the signed disposition envelope to the tenant's configured "
+                "Shuffle webhook — triggers a Shuffle SOAR workflow. URL comes "
+                "from shuffle_webhook_url tenant policy, never from the playbook."
+            ),
+            handler=_notify_shuffle,
+        ),
+        ResponseCapability(
             name="external_action",
             capability_class=CapabilityClass.WRITE_EXTERNAL,
-            # Gated: never autonomous. Routes to a human-approved proposal
-            # before the executor calls the operator-configured endpoint.
             approval=ApprovalPolicy.TYPED_REASON,
             description=(
                 "POST a named action + signed envelope to an operator-configured "

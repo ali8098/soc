@@ -1,5 +1,5 @@
-"""Bridge from MCP-bound tools (Wazuh, future Cortex/MISP/TheHive) into
-the chat agent's tool surface.
+"""Bridge from MCP-bound tools (Wazuh, Cortex, TheHive, MISP, Velociraptor,
+DFIR-IRIS) into the chat agent's tool surface.
 
 The verdict node already binds these MCP clients on the runs-worker side.
 For the chat agent we want the same tools — analysts asking "show me
@@ -21,6 +21,15 @@ Important: the chat agent runs in the **soctalk-system API pod**. The
 MCP clients must be bound on that process's startup — the runs-worker
 binding doesn't help. See ``core/api/app_v1.py`` for the lifespan
 hook that calls ``mcp.bindings.bind_clients``.
+
+Note on Shuffle / Zeek / Suricata: these are deliberately NOT registered
+here. Shuffle is outbound-only (SocTalk pushes a webhook to trigger a
+workflow — there's nothing for the chat agent to *query*, so no MCP
+client/tool surface applies). Zeek and Suricata are log sources, not
+queryable APIs; their data reaches the chat agent indirectly, either
+via Wazuh (if forwarded through it) or via the ingestion-adapter path
+that turns their logs into investigations — neither exposes MCP tools
+of its own for the model to call.
 """
 
 from __future__ import annotations
@@ -31,7 +40,14 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from soctalk.chat.tools import ChatTool, ToolResult, _enforce_size
-from soctalk.mcp import get_cortex_client, get_thehive_client, get_wazuh_client
+from soctalk.mcp import (
+    get_cortex_client,
+    get_dfir_iris_client,
+    get_misp_client,
+    get_thehive_client,
+    get_velociraptor_client,
+    get_wazuh_client,
+)
 
 
 logger = structlog.get_logger()
@@ -112,6 +128,9 @@ def build_mcp_chat_tools() -> list[ChatTool]:
         ("wazuh", get_wazuh_client),
         ("cortex", get_cortex_client),
         ("thehive", get_thehive_client),
+        ("misp", get_misp_client),
+        ("velociraptor", get_velociraptor_client),
+        ("dfir_iris", get_dfir_iris_client),
     ):
         client = getter()
         if client is None:

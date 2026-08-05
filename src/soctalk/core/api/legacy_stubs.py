@@ -14,7 +14,6 @@ unauthenticated request gets the layout's pre-login probe handling
 Side-effecting routes (POST /review/{id}/approve, etc.) intentionally
 404 — they're disabled until the real bridge lands.
 """
-
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from soctalk.core.tenancy.auth import current_identity
 from soctalk.core.tenancy.decorators import require_permission_any
@@ -32,29 +32,13 @@ from soctalk.core.tenancy.permissions import Permission
 if TYPE_CHECKING:
     from soctalk.core.tenancy.auth import UserIdentity
 
-# Review decisions are shared between the MSSP analyst and a co-managed-SOC tenant operator.
-# The handlers already RLS-scope every non-fleet caller to its own tenant (see
-# ``_resolve_pending_review``), so one OR-guard admits both audiences under their own capability.
 _REVIEW_DECIDE_GUARD = require_permission_any(
     (Permission.REVIEW_DECIDE, "mssp"),
     (Permission.TENANT_REVIEW_DECIDE, "tenant"),
 )
-# The pending-review queue is operational data (AI verdicts awaiting a human decision) on a
-# tenant-isolated table with NO audience/visibility column — so a read-only ``customer_viewer``
-# who reached the read endpoints would enumerate its tenant's whole operate queue. Gate the reads
-# on the same authority as the decide actions: in this model whoever may decide is exactly whoever
-# may view, so only operators (MSSP analyst+ or a co-managed tenant_analyst+) can list/fetch reviews.
 _REVIEW_ACCESS_GUARD = _REVIEW_DECIDE_GUARD
 
-# All stubs sit behind the same session middleware as the rest of the
-# canonical-frontend bridges. The middleware *attaches* identity but
-# does not reject unauthenticated requests on its own — every router
-# handler is responsible for the gate. Hang ``current_identity`` on
-# the router so an unauthenticated GET hits 401 here instead of
-# tunneling all the way through to a stub response (especially the
-# long-lived /api/events/stream SSE).
 router = APIRouter(tags=["legacy-stubs"], dependencies=[Depends(current_identity)])
-
 
 # ---------------------------------------------------------------------------
 # /api/events/stream — SSE heartbeat
@@ -63,22 +47,6 @@ router = APIRouter(tags=["legacy-stubs"], dependencies=[Depends(current_identity
 
 @router.get("/api/events/stream")
 async def events_stream(request: Request) -> StreamingResponse:
-    """Open-ended SSE stream that emits a ``ping`` every 25s.
-
-    The frontend's ``initSSE`` opens an EventSource against this path on
-    every authenticated page. Returning a real SSE stream (instead of
-    404) keeps the layout's "Live"/"Offline" badge accurate and lets us
-    layer real events on later without a frontend change.
-
-    Connection-pool note: the request goes through ``DBSessionMiddleware``
-    which holds an ``AsyncSession`` open for the request lifetime — for
-    a long-lived stream that means the session lingers indefinitely and
-    multi-tab users would drain the pool. The auth dependency
-    (``current_identity``) ran before this handler, so we explicitly
-    close the session before entering the yield loop and let the
-    middleware's ``finally`` find an already-closed session (no-op).
-    """
-
     db = getattr(request.state, "db", None)
     if db is not None:
         try:
@@ -87,7 +55,6 @@ async def events_stream(request: Request) -> StreamingResponse:
             pass
 
     async def gen():
-        # Emit one initial ``open`` so the client flips to Connected.
         yield "event: ping\n" + "data: {}\n\n"
         try:
             while True:
@@ -107,7 +74,7 @@ async def events_stream(request: Request) -> StreamingResponse:
 
 
 # ---------------------------------------------------------------------------
-# /api/review/pending — bridged to the V1 pending_reviews table
+# /api/review/pending
 # ---------------------------------------------------------------------------
 
 
@@ -153,15 +120,6 @@ async def review_pending(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
 ) -> _PendingReviewList:
-    """List pending HIL reviews from the V1 pending_reviews table.
-
-    Role-aware tenant scoping:
-      - MSSP / platform admins → BYPASSRLS session, cross-tenant view.
-      - Tenant-scoped users → app-role session with ``tenant_context``,
-        RLS restricts the SELECT to their own tenant.
-    """
-    from sqlalchemy import text
-
     from soctalk.core.tenancy.context import tenant_context
     from soctalk.core.tenancy.db import (
         get_app_sessionmaker,
@@ -222,18 +180,10 @@ _MSSP_LEVEL_ROLES = {"platform_admin", "mssp_admin", "mssp_manager"}
 
 
 def _effective_review_tenant(identity: "UserIdentity"):
-    """The tenant a non-fleet caller reads reviews for: an MSSP operator's Open-SOC pin
-    (``current_tenant``) if present, else the caller's home ``tenant_id``. A pinned MSSP
-    ``analyst`` (which carries no home ``tenant_id``) can then work the pinned tenant's queue;
-    a tenant user always resolves to its own ``tenant_id`` (it cannot pin — see
-    ``/auth/assume-tenant``, MSSP-only), so this never widens a tenant caller's scope."""
     return getattr(identity, "current_tenant", None) or identity.tenant_id
 
 
 def _pending_review_item(r: "Any") -> _PendingReviewItem:
-    """Map a full ``pending_reviews`` row to the wire shape. Shared by the
-    list and single-fetch endpoints so both stay in lockstep."""
-
     def _iso(value: Any) -> str | None:
         if value is None:
             return None
@@ -268,7 +218,6 @@ def _pending_review_item(r: "Any") -> _PendingReviewItem:
     )
 
 
-# Full-row projection used by both the list and single-fetch endpoints.
 _REVIEW_COLUMNS = """
     id::text, investigation_id::text, tenant_id::text, status, title, description,
     max_severity, alert_count, malicious_count, suspicious_count,
@@ -284,16 +233,7 @@ _REVIEW_COLUMNS = """
     dependencies=[Depends(_REVIEW_ACCESS_GUARD)],
 )
 async def review_detail(review_id: str, request: Request) -> _PendingReviewItem:
-    """Fetch a single HIL review by id, role-aware tenant-scoped.
-
-    Uses the same two-pool RLS idiom as ``_resolve_pending_review``:
-    fleet MSSP roles read cross-tenant via the BYPASSRLS session; everyone
-    else is pinned by ``tenant_context`` to their effective tenant (Open-SOC
-    pin or home tenant_id) so a cross-tenant id 404s the same way a truly
-    missing row does (never disclose existence).
-    """
     from fastapi import HTTPException
-    from sqlalchemy import text
 
     from soctalk.core.tenancy.context import tenant_context
     from soctalk.core.tenancy.db import (
@@ -334,18 +274,7 @@ class _ReviewActionResponse(BaseModel):
 async def _resolve_pending_review(
     review_id: str, identity: "UserIdentity"
 ) -> dict[str, Any]:
-    """Resolve a review with role-aware tenant scoping.
-
-    Fleet MSSP roles (``platform_admin``, ``mssp_admin``, ``mssp_manager``) see all tenants' rows
-    via the BYPASSRLS MSSP session. Every other caller is scoped to its *effective* tenant (an
-    Open-SOC pin for a pinned MSSP ``analyst``, else the home ``tenant_id`` for a tenant user) via
-    the RLS-subject app session with ``tenant_context`` set.
-
-    Raises HTTP 404 if the review is not found within the caller's tenant scope (cross-tenant
-    lookups fail with the same code path as truly missing rows — never disclose existence).
-    """
     from fastapi import HTTPException
-    from sqlalchemy import text
 
     from soctalk.core.tenancy.context import tenant_context
     from soctalk.core.tenancy.db import (
@@ -386,13 +315,6 @@ async def _apply_review_decision(
     decision: str,
     feedback: str | None,
 ) -> _ReviewActionResponse:
-    """Common path for approve/reject/request-info.
-
-    Routes through ``record_human_decision_received`` which appends
-    the canonical ``HUMAN_DECISION_RECEIVED`` event to the event log
-    and performs the V1-schema side effects (pending_reviews status
-    flip, investigation close on reject) in one transaction.
-    """
     from uuid import UUID
 
     from soctalk.core.ir.review_events import (
@@ -420,9 +342,6 @@ async def _apply_review_decision(
             )
             await s.commit()
     else:
-        # Scope the write to the RESOLVED review's tenant (already validated by
-        # _resolve_pending_review under the caller's scope), NOT identity.tenant_id — a pinned
-        # MSSP analyst carries no home tenant_id, so keying on it would break the write.
         sm = get_app_sessionmaker()
         async with sm() as s:
             async with tenant_context(s, tenant_uuid):
@@ -456,7 +375,6 @@ class _ApproveBody(BaseModel):
 async def review_approve(
     review_id: str, body: _ApproveBody, request: Request
 ) -> _ReviewActionResponse:
-    """Analyst approved the AI verdict — investigation stays escalated."""
     from fastapi import HTTPException
 
     identity = current_identity(request)
@@ -477,7 +395,6 @@ async def review_approve(
 async def review_reject(
     review_id: str, body: _ApproveBody, request: Request
 ) -> _ReviewActionResponse:
-    """Analyst overrode the AI verdict — close as false positive."""
     from fastapi import HTTPException
 
     identity = current_identity(request)
@@ -502,7 +419,6 @@ class _RequestInfoBody(BaseModel):
 async def review_request_info(
     review_id: str, body: _RequestInfoBody, request: Request
 ) -> _ReviewActionResponse:
-    """Analyst requested additional information — investigation stays open."""
     from fastapi import HTTPException
 
     identity = current_identity(request)
@@ -528,19 +444,6 @@ class _ExpireBody(BaseModel):
 async def review_expire(
     review_id: str, body: _ExpireBody, request: Request
 ) -> _ReviewActionResponse:
-    """Retire a pending review without an analyst verdict.
-
-    Used for operator-driven cleanup (stale or duplicate queue items) and
-    for the future timeout-driven expiration job. Distinct from
-    approve/reject/request-info: emits ``HUMAN_REVIEW_EXPIRED`` rather
-    than ``HUMAN_DECISION_RECEIVED``, so the audit trail shows the row
-    was retired administratively, not adjudicated.
-
-    Authorization: MSSP-level roles (platform_admin, mssp_admin) can
-    expire any tenant's review. Tenant-scoped roles can only expire
-    their own; ``_resolve_pending_review`` enforces both via the same
-    role-aware session pattern used by the other actions.
-    """
     from uuid import UUID
 
     from fastapi import HTTPException
@@ -576,8 +479,6 @@ async def review_expire(
     else:
         sm = get_app_sessionmaker()
         async with sm() as s:
-            # Scope to the resolved review's tenant (see _apply_review_decision), not
-            # identity.tenant_id, so a pinned MSSP analyst's expire also succeeds.
             async with tenant_context(s, tenant_uuid):
                 await record_human_review_expired(
                     s,
@@ -597,12 +498,11 @@ async def review_expire(
 
 
 # ---------------------------------------------------------------------------
-# /api/analytics/* — empty defaults
+# /api/analytics/*
 # ---------------------------------------------------------------------------
 
 
 async def _analytics_session_for(identity: "UserIdentity"):
-    """Same role-aware session pattern as the audit endpoints."""
     from soctalk.core.tenancy.context import tenant_context
     from soctalk.core.tenancy.db import get_app_sessionmaker, get_mssp_sessionmaker
 
@@ -684,7 +584,6 @@ async def _ai_behavior(session, days: int) -> dict[str, Any]:
     from sqlalchemy import text as _t
 
     p = {"d": int(days)}
-    # Confidence histogram in 10 buckets.
     rows = (
         await session.execute(
             _t(
@@ -701,17 +600,10 @@ async def _ai_behavior(session, days: int) -> dict[str, Any]:
             p,
         )
     ).all()
-    # Frontend ApexCharts config reads ``range_label`` on each bucket
-    # (analytics/+page.svelte#L73). Keep the key name aligned.
     confidence_distribution = [
         {"range_label": f"{(r[0] - 1) / 10:.1f}-{r[0] / 10:.1f}", "count": int(r[1])}
         for r in rows
     ]
-    # Daily decision trend — frontend expects per-day rows with
-    # decision counts pivoted into columns (close/escalate/needs_more_info/
-    # suspicious), one chart series per column. The long-form
-    # (day, decision, count) was rejected at render time because the
-    # chart map() reads ``t.close`` etc. directly.
     daily = (
         await session.execute(
             _t(
@@ -735,9 +627,6 @@ async def _ai_behavior(session, days: int) -> dict[str, Any]:
         bucket = trends_by_day.setdefault(
             key,
             {
-                # ``period`` matches the DecisionTrend client contract; the
-                # frontend parses it as a date for the x-axis. Emitting ``day``
-                # here left that axis reading undefined -> "Invalid Date".
                 "period": key,
                 "close": 0,
                 "escalate": 0,
@@ -749,9 +638,6 @@ async def _ai_behavior(session, days: int) -> dict[str, Any]:
         if col in bucket:
             bucket[col] = int(n)
     decision_trends = [trends_by_day[k] for k in sorted(trends_by_day.keys())]
-    # Escalation breakdown — top severity buckets for escalated reviews.
-    # Frontend reads ``reason`` (string, used for color-coding by
-    # severity name) and ``percentage`` (0-1).
     breakdown = (
         await session.execute(
             _t(
@@ -770,8 +656,6 @@ async def _ai_behavior(session, days: int) -> dict[str, Any]:
     breakdown_total = sum(int(r[1]) for r in breakdown) or 1
     escalation_breakdown = [
         {
-            # Title-case so the frontend's substring checks
-            # (``includes('Critical')`` etc.) for colour mapping hit.
             "reason": (r[0] or "Unknown").title(),
             "count": int(r[1]),
             "percentage": int(r[1]) / breakdown_total,
@@ -963,23 +847,11 @@ async def analytics_outcomes(
 
 
 # ---------------------------------------------------------------------------
-# /api/audit/* — empty list + event types
+# /api/audit/*
 # ---------------------------------------------------------------------------
 
 
 async def _audit_session_for(identity: "UserIdentity"):
-    """Return a session + scoping context appropriate for the caller.
-
-    MSSP-level roles use the BYPASSRLS session so they see every
-    tenant's audit trail. Tenant-level roles use the RLS-subject
-    session with ``tenant_context`` so their audit query is naturally
-    scoped to their own tenant_id by the events_tenant_isolation
-    policy on the ``events`` table.
-
-    Yields ``(session, needs_commit)`` — read-only here so the caller
-    never commits, but the shape mirrors the write helpers above for
-    readability.
-    """
     from soctalk.core.tenancy.context import tenant_context
     from soctalk.core.tenancy.db import get_app_sessionmaker, get_mssp_sessionmaker
 
@@ -996,7 +868,6 @@ async def _audit_session_for(identity: "UserIdentity"):
 
 @router.get("/api/audit/event-types")
 async def audit_event_types(request: Request) -> dict[str, list[str]]:
-    """Distinct event types present in the audit log — drives the UI filter."""
     from sqlalchemy import text as _t
 
     identity = current_identity(request)
@@ -1018,13 +889,6 @@ async def audit_list(
     end_date: str | None = None,
     investigation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Paginated audit log query against the ``events`` table.
-
-    Filters are AND-composed; missing filters are dropped from the
-    WHERE. ``total`` is a separate COUNT(*) over the same predicate so
-    the frontend pager works. Tenant scoping is handled by either
-    BYPASSRLS (MSSP) or the events RLS policy (tenant).
-    """
     from sqlalchemy import text as _t
 
     identity = current_identity(request)
@@ -1096,14 +960,9 @@ async def audit_list(
 async def audit_stats(
     request: Request, hours: int = Query(24, ge=1, le=720)
 ) -> dict[str, Any]:
-    """Aggregate counters for the audit dashboard."""
     from sqlalchemy import text as _t
 
     identity = current_identity(request)
-    # ``hours`` is already bounded to [1, 720] by Query(...). Construct
-    # the interval via ``make_interval`` rather than ``(:h)::interval``
-    # because asyncpg can't cast a bind param to ``interval`` directly
-    # (server-side parser sees ``$1`` before it has a target type).
     params = {"h": int(hours)}
     async for s in _audit_session_for(identity):
         total = (
@@ -1162,7 +1021,6 @@ async def audit_investigation(
     request: Request,
     limit: int = Query(200, ge=1, le=2000),
 ) -> dict[str, Any]:
-    """Per-investigation event timeline for the case-detail audit tab."""
     from sqlalchemy import text as _t
 
     identity = current_identity(request)
@@ -1220,60 +1078,252 @@ async def audit_investigation(
 
 
 # ---------------------------------------------------------------------------
-# /api/settings — minimal read-only snapshot
+# /api/settings — DB-backed (integration_configs), tenant-scoped
 # ---------------------------------------------------------------------------
+#
+# Was: single JSON file on disk, global to the whole install, never
+# reaching the tenant adapter/runs-worker process (they read
+# IntegrationConfig via settings_provider.py, not this file). Now: one
+# row per tenant in integration_configs, same table the adapter and
+# workers already read.
+
+_SECRET_COLUMNS = {
+    "shuffle_webhook_url": ("shuffle_webhook_url", "shuffle_webhook_configured"),
+    "dfir_iris_api_key": ("dfir_iris_api_key_plain", "dfir_iris_api_key_configured"),
+}
+
+_INTEGRATION_CONFIG_COLUMNS = """
+    llm_provider, llm_fast_model, llm_reasoning_model, llm_temperature, llm_max_tokens,
+    llm_api_key_plain,
+    wazuh_enabled, wazuh_url, wazuh_verify_ssl,
+    wazuh_username, wazuh_password_plain, wazuh_api_token_plain,
+    cortex_enabled, cortex_url, cortex_verify_ssl,
+    thehive_enabled, thehive_url, thehive_organisation, thehive_verify_ssl,
+    misp_enabled, misp_url, misp_verify_ssl,
+    velociraptor_enabled, velociraptor_api_client_config_path,
+    dfir_iris_enabled, dfir_iris_url, dfir_iris_verify_ssl, dfir_iris_api_key_plain,
+    shuffle_enabled, shuffle_webhook_url,
+    zeek_enabled, zeek_log_path,
+    suricata_enabled, suricata_log_path, suricata_ingest_all_events,
+    slack_enabled, slack_channel, slack_notify_on_escalation, slack_notify_on_verdict,
+    updated_at
+"""
 
 
-@router.get("/api/settings")
-async def settings_get() -> dict[str, Any]:
-    """Read-only settings snapshot.
+async def _settings_tenant_id(identity: "UserIdentity"):
+    from fastapi import HTTPException
 
-    The full settings UX edits MCP integration credentials in the legacy
-    single-tenant install; in V1 those live in per-tenant
-    IntegrationConfig (see /api/llm/* and the MSSP tenants UI). We
-    return a non-empty shape with everything ``readonly=True`` so the
-    page renders the read-only view rather than an error.
-    """
+    tid = _effective_review_tenant(identity)
+    if tid is None:
+        raise HTTPException(403, "select a tenant before reading/writing settings")
+    return tid
 
+
+async def _settings_session(identity: "UserIdentity"):
+    from soctalk.core.tenancy.context import tenant_context
+    from soctalk.core.tenancy.db import get_app_sessionmaker, get_mssp_sessionmaker
+
+    tid = await _settings_tenant_id(identity)
+    if identity.role in _MSSP_LEVEL_ROLES:
+        sm = get_mssp_sessionmaker()
+        async with sm() as s:
+            yield s, tid
+    else:
+        sm = get_app_sessionmaker()
+        async with sm() as s:
+            async with tenant_context(s, tid):
+                yield s, tid
+
+
+def _settings_row_to_dict(row: Any, tenant_id: Any) -> dict[str, Any]:
     return {
-        "id": "v1-readonly",
-        "readonly": True,
+        "id": str(tenant_id),
+        "readonly": False,
         "sources": {},
-        "llm_provider": "openai",
-        "llm_fast_model": "gpt-4o-mini",
-        "llm_reasoning_model": "gpt-4o",
-        "llm_temperature": 0.2,
-        "llm_max_tokens": 4096,
+        "llm_provider": row["llm_provider"],
+        "llm_fast_model": row["llm_fast_model"],
+        "llm_reasoning_model": row["llm_reasoning_model"],
+        "llm_temperature": float(row["llm_temperature"]),
+        "llm_max_tokens": int(row["llm_max_tokens"]),
         "llm_anthropic_base_url": None,
         "llm_openai_base_url": None,
         "llm_openai_organization": None,
-        "anthropic_api_key_configured": False,
-        "openai_api_key_configured": False,
+        "anthropic_api_key_configured": bool(row["llm_api_key_plain"]),
+        "openai_api_key_configured": bool(row["llm_api_key_plain"]),
         "llm_keys_conflict": False,
-        "wazuh_enabled": False,
-        "wazuh_url": None,
-        "wazuh_verify_ssl": True,
-        "wazuh_credentials_configured": False,
-        "cortex_enabled": False,
-        "cortex_url": None,
-        "cortex_verify_ssl": True,
+        "wazuh_enabled": bool(row["wazuh_enabled"]),
+        "wazuh_url": row["wazuh_url"],
+        "wazuh_verify_ssl": bool(row["wazuh_verify_ssl"]),
+        "wazuh_credentials_configured": bool(
+            row["wazuh_password_plain"] or row["wazuh_api_token_plain"]
+        ),
+        "cortex_enabled": bool(row["cortex_enabled"]),
+        "cortex_url": row["cortex_url"],
+        "cortex_verify_ssl": bool(row["cortex_verify_ssl"]),
         "cortex_api_key_configured": False,
-        "thehive_enabled": False,
-        "thehive_url": None,
-        "thehive_organisation": None,
-        "thehive_verify_ssl": True,
+        "thehive_enabled": bool(row["thehive_enabled"]),
+        "thehive_url": row["thehive_url"],
+        "thehive_organisation": row["thehive_organisation"],
+        "thehive_verify_ssl": bool(row["thehive_verify_ssl"]),
         "thehive_api_key_configured": False,
-        "misp_enabled": False,
-        "misp_url": None,
-        "misp_verify_ssl": True,
+        "misp_enabled": bool(row["misp_enabled"]),
+        "misp_url": row["misp_url"],
+        "misp_verify_ssl": bool(row["misp_verify_ssl"]),
         "misp_api_key_configured": False,
-        "slack_enabled": False,
-        "slack_channel": None,
-        "slack_notify_on_escalation": False,
-        "slack_notify_on_verdict": False,
+        "velociraptor_enabled": bool(row["velociraptor_enabled"]),
+        "velociraptor_api_client_config_path": row["velociraptor_api_client_config_path"],
+        "velociraptor_credentials_configured": bool(
+            row["velociraptor_api_client_config_path"]
+        ),
+        "dfir_iris_enabled": bool(row["dfir_iris_enabled"]),
+        "dfir_iris_url": row["dfir_iris_url"],
+        "dfir_iris_verify_ssl": bool(row["dfir_iris_verify_ssl"]),
+        "dfir_iris_api_key_configured": bool(row["dfir_iris_api_key_plain"]),
+        "shuffle_enabled": bool(row["shuffle_enabled"]),
+        "shuffle_webhook_configured": bool(row["shuffle_webhook_url"]),
+        "zeek_enabled": bool(row["zeek_enabled"]),
+        "zeek_ingest_path": row["zeek_log_path"],
+        "suricata_enabled": bool(row["suricata_enabled"]),
+        "suricata_ingest_path": row["suricata_log_path"],
+        "suricata_ingest_all_events": bool(row["suricata_ingest_all_events"]),
+        "slack_enabled": bool(row["slack_enabled"]),
+        "slack_channel": row["slack_channel"],
+        "slack_notify_on_escalation": bool(row["slack_notify_on_escalation"]),
+        "slack_notify_on_verdict": bool(row["slack_notify_on_verdict"]),
         "slack_webhook_configured": False,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": (
+            row["updated_at"].isoformat() if row["updated_at"] else None
+        ),
     }
+
+
+@router.get("/api/settings")
+async def settings_get(request: Request) -> dict[str, Any]:
+    identity = current_identity(request)
+    async for s, tid in _settings_session(identity):
+        row = (
+            await s.execute(
+                text(f"SELECT {_INTEGRATION_CONFIG_COLUMNS} FROM integration_configs "
+                     "WHERE tenant_id = :tid"),
+                {"tid": str(tid)},
+            )
+        ).mappings().first()
+        if row is None:
+            await s.execute(
+                text("INSERT INTO integration_configs (id, tenant_id) "
+                     "VALUES (gen_random_uuid(), :tid) "
+                     "ON CONFLICT (tenant_id) DO NOTHING"),
+                {"tid": str(tid)},
+            )
+            await s.commit()
+            row = (
+                await s.execute(
+                    text(f"SELECT {_INTEGRATION_CONFIG_COLUMNS} FROM integration_configs "
+                         "WHERE tenant_id = :tid"),
+                    {"tid": str(tid)},
+                )
+            ).mappings().first()
+        return _settings_row_to_dict(row, tid)
+
+
+class _SettingsSaveBody(BaseModel):
+    llm_provider: str | None = None
+    llm_fast_model: str | None = None
+    llm_reasoning_model: str | None = None
+    llm_temperature: float | None = None
+    llm_max_tokens: int | None = None
+    wazuh_enabled: bool | None = None
+    wazuh_url: str | None = None
+    wazuh_verify_ssl: bool | None = None
+    cortex_enabled: bool | None = None
+    cortex_url: str | None = None
+    cortex_verify_ssl: bool | None = None
+    thehive_enabled: bool | None = None
+    thehive_url: str | None = None
+    thehive_organisation: str | None = None
+    thehive_verify_ssl: bool | None = None
+    misp_enabled: bool | None = None
+    misp_url: str | None = None
+    misp_verify_ssl: bool | None = None
+    velociraptor_enabled: bool | None = None
+    velociraptor_api_client_config_path: str | None = None
+    dfir_iris_enabled: bool | None = None
+    dfir_iris_url: str | None = None
+    dfir_iris_verify_ssl: bool | None = None
+    dfir_iris_api_key: str | None = None
+    shuffle_enabled: bool | None = None
+    shuffle_webhook_url: str | None = None
+    zeek_enabled: bool | None = None
+    zeek_ingest_path: str | None = None
+    suricata_enabled: bool | None = None
+    suricata_ingest_path: str | None = None
+    suricata_ingest_all_events: bool | None = None
+    slack_enabled: bool | None = None
+    slack_channel: str | None = None
+    slack_notify_on_escalation: bool | None = None
+    slack_notify_on_verdict: bool | None = None
+
+
+_FIELD_TO_COLUMN = {
+    "zeek_ingest_path": "zeek_log_path",
+    "suricata_ingest_path": "suricata_log_path",
+}
+
+
+@router.put("/api/settings")
+async def settings_put(body: _SettingsSaveBody, request: Request) -> dict[str, Any]:
+    from fastapi import HTTPException
+
+    identity = current_identity(request)
+    payload = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not payload:
+        async for s, tid in _settings_session(identity):
+            row = (
+                await s.execute(
+                    text(f"SELECT {_INTEGRATION_CONFIG_COLUMNS} FROM integration_configs "
+                         "WHERE tenant_id = :tid"),
+                    {"tid": str(tid)},
+                )
+            ).mappings().first()
+            if row is None:
+                raise HTTPException(404, "settings not found for tenant")
+            d = _settings_row_to_dict(row, tid)
+            return {"success": True, "updated_at": d["updated_at"]}
+
+    if "dfir_iris_api_key" in payload:
+        payload["dfir_iris_api_key_plain"] = payload.pop("dfir_iris_api_key")
+
+    set_clauses = []
+    params: dict[str, Any] = {}
+    for field, value in payload.items():
+        column = _FIELD_TO_COLUMN.get(field, field)
+        set_clauses.append(f"{column} = :{column}")
+        params[column] = value
+    set_clauses.append("updated_at = now()")
+
+    async for s, tid in _settings_session(identity):
+        params["tid"] = str(tid)
+        await s.execute(
+            text("INSERT INTO integration_configs (id, tenant_id) "
+                 "VALUES (gen_random_uuid(), :tid) "
+                 "ON CONFLICT (tenant_id) DO NOTHING"),
+            {"tid": str(tid)},
+        )
+        await s.execute(
+            text(f"UPDATE integration_configs SET {', '.join(set_clauses)} "
+                 "WHERE tenant_id = :tid"),
+            params,
+        )
+        await s.commit()
+        row = (
+            await s.execute(
+                text(f"SELECT {_INTEGRATION_CONFIG_COLUMNS} FROM integration_configs "
+                     "WHERE tenant_id = :tid"),
+                {"tid": str(tid)},
+            )
+        ).mappings().first()
+        d = _settings_row_to_dict(row, tid)
+        return {"success": True, "updated_at": d["updated_at"]}
 
 
 __all__ = ["router"]

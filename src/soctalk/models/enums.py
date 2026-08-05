@@ -105,6 +105,8 @@ class SupervisorAction(str, Enum):
     ENRICH = "ENRICH"
     CONTEXTUALIZE = "CONTEXTUALIZE"
     INVESTIGATE = "INVESTIGATE"
+    QUERY_iRIS = "QUERY_IRIS"
+    HUNT = "HUNT"
     VERDICT = "VERDICT"
     CLOSE = "CLOSE"
 

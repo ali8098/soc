@@ -144,6 +144,7 @@ agentIngress:
     secretName: "wazuh-tls"
 
 # SocTalk adapter (health reporting + Wazuh alert ingest back to L1)
+# SocTalk adapter (health reporting + Wazuh alert ingest back to L1)
 adapter:
   image:
     repository: "ghcr.io/soctalk/soctalk-adapter"
@@ -168,6 +169,19 @@ adapter:
     # credsSecret: wazuh-<slug>-creds
     # usernameKey: INDEXER_USERNAME
     # passwordKey: INDEXER_PASSWORD
+  # Zeek log ingestion. Disabled by default.
+  # Enable per-tenant by setting enabled: true and logPath to the
+  # Zeek logs directory mounted into the adapter pod.
+  zeek:
+    enabled: false
+    logPath: "/opt/zeek/logs/current"
+  # Suricata EVE JSON ingestion. Disabled by default.
+  # Set ingestAllEvents: "1" for full network visibility (flows, dns,
+  # http) in addition to alerts. Default "0" ingests alerts only.
+  suricata:
+    enabled: false
+    logPath: "/var/log/suricata/eve.json"
+    ingestAllEvents: "0"
   # Probe is configurable so tests / alternative adapter impls can opt out
   # or point at a different path. Set to null (or omit) to disable the
   # probe — useful when running a stub image that doesn't serve health.
@@ -177,6 +191,8 @@ adapter:
       port: 8080
     initialDelaySeconds: 5
     periodSeconds: 5
+
+
 
 runsWorker:
   enabled: true

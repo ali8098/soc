@@ -28,6 +28,7 @@ from soctalk.core.api import health as health_routes
 from soctalk.core.api import investigations_bridge as investigations_bridge_routes
 from soctalk.core.api import ir as ir_routes
 from soctalk.core.api import legacy_stubs as legacy_stubs_routes
+from soctalk.core.api import shuffle_callback as shuffle_callback_routes
 from soctalk.core.api import llm_config as llm_routes
 from soctalk.core.api import metrics_bridge as metrics_bridge_routes
 from soctalk.core.api import mssp_analytics as mssp_analytics_routes
@@ -293,6 +294,7 @@ def create_app(db_session_middleware: type | None = None) -> FastAPI:
     # /settings, /events/stream so canonical-frontend pages render
     # while their V1 bridges are still pending (P3-*).
     app.include_router(legacy_stubs_routes.router)
+    app.include_router(shuffle_callback_routes.router)
     # L2-agent wire protocol (bearer-token auth, no session cookie).
     app.include_router(agents_routes.router)
 

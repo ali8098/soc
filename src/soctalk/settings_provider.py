@@ -45,6 +45,16 @@ class IntegrationSettings:
     misp_url: Optional[str] = None
     misp_verify_ssl: bool = True
 
+    # Velociraptor
+    velociraptor_enabled: bool = False
+    velociraptor_max_rows: int = 200
+
+    # DFIR-IRIS
+    dfir_iris_enabled: bool = False
+    dfir_iris_url: Optional[str] = None
+    dfir_iris_verify_ssl: bool = True
+    dfir_iris_max_rows: int = 200
+
     # Slack
     slack_enabled: bool = False
     slack_channel: Optional[str] = None
@@ -62,6 +72,10 @@ class IntegrationSecrets:
     thehive_api_key: Optional[str] = None
     misp_api_key: Optional[str] = None
     slack_webhook_url: Optional[str] = None
+    # Velociraptor — mTLS bundle path (not a key, but sensitive)
+    velociraptor_api_client_config_path: Optional[str] = None
+    # DFIR-IRIS — bearer token
+    dfir_iris_api_key: Optional[str] = None
 
 
 def load_integration_secrets_from_env() -> IntegrationSecrets:
@@ -73,6 +87,8 @@ def load_integration_secrets_from_env() -> IntegrationSecrets:
         thehive_api_key=os.getenv("THEHIVE_API_KEY") or os.getenv("THEHIVE_API_TOKEN"),
         misp_api_key=os.getenv("MISP_API_KEY"),
         slack_webhook_url=os.getenv("SLACK_WEBHOOK_URL"),
+        velociraptor_api_client_config_path=os.getenv("VELOCIRAPTOR_API_CLIENT_CONFIG"),
+        dfir_iris_api_key=os.getenv("DFIR_IRIS_API_KEY"),
     )
 
 
@@ -111,6 +127,14 @@ def load_integration_settings_from_env() -> IntegrationSettings:
         misp_enabled=_parse_bool(os.getenv("MISP_ENABLED"), False),
         misp_url=os.getenv("MISP_URL"),
         misp_verify_ssl=_parse_bool(os.getenv("MISP_VERIFY_SSL"), True),
+        # Velociraptor
+        velociraptor_enabled=_parse_bool(os.getenv("VELOCIRAPTOR_ENABLED"), False),
+        velociraptor_max_rows=int(os.getenv("VELOCIRAPTOR_MAX_ROWS", "200")),
+        # DFIR-IRIS
+        dfir_iris_enabled=_parse_bool(os.getenv("DFIR_IRIS_ENABLED"), False),
+        dfir_iris_url=os.getenv("DFIR_IRIS_URL"),
+        dfir_iris_verify_ssl=_parse_bool(os.getenv("DFIR_IRIS_VERIFY_SSL"), True),
+        dfir_iris_max_rows=int(os.getenv("DFIR_IRIS_MAX_ROWS", "200")),
         # Slack
         slack_enabled=_parse_bool(os.getenv("SLACK_ENABLED"), False),
         slack_channel=os.getenv("SLACK_CHANNEL"),
@@ -120,14 +144,7 @@ def load_integration_settings_from_env() -> IntegrationSettings:
 
 
 def create_wazuh_mcp_config(settings: IntegrationSettings) -> Optional[MCPServerConfig]:
-    """Create Wazuh MCP server config from integration settings.
-
-    Args:
-        settings: Integration settings from database.
-
-    Returns:
-        MCPServerConfig if Wazuh is enabled and configured, None otherwise.
-    """
+    """Create Wazuh MCP server config from integration settings."""
     if not settings.wazuh_enabled:
         return None
 
@@ -177,14 +194,7 @@ def create_wazuh_mcp_config(settings: IntegrationSettings) -> Optional[MCPServer
 
 
 def create_cortex_mcp_config(settings: IntegrationSettings) -> Optional[MCPServerConfig]:
-    """Create Cortex MCP server config from integration settings.
-
-    Args:
-        settings: Integration settings from database.
-
-    Returns:
-        MCPServerConfig if Cortex is enabled and configured, None otherwise.
-    """
+    """Create Cortex MCP server config from integration settings."""
     if not settings.cortex_enabled:
         return None
 
@@ -217,14 +227,7 @@ def create_cortex_mcp_config(settings: IntegrationSettings) -> Optional[MCPServe
 
 
 def create_thehive_mcp_config(settings: IntegrationSettings) -> Optional[MCPServerConfig]:
-    """Create TheHive MCP server config from integration settings.
-
-    Args:
-        settings: Integration settings from database.
-
-    Returns:
-        MCPServerConfig if TheHive is enabled and configured, None otherwise.
-    """
+    """Create TheHive MCP server config from integration settings."""
     if not settings.thehive_enabled:
         return None
 
@@ -262,14 +265,7 @@ def create_thehive_mcp_config(settings: IntegrationSettings) -> Optional[MCPServ
 
 
 def create_misp_mcp_config(settings: IntegrationSettings) -> Optional[MCPServerConfig]:
-    """Create MISP MCP server config from integration settings.
-
-    Args:
-        settings: Integration settings from database.
-
-    Returns:
-        MCPServerConfig if MISP is enabled and configured, None otherwise.
-    """
+    """Create MISP MCP server config from integration settings."""
     if not settings.misp_enabled:
         return None
 
@@ -301,6 +297,76 @@ def create_misp_mcp_config(settings: IntegrationSettings) -> Optional[MCPServerC
     )
 
 
+def create_velociraptor_mcp_config(settings: IntegrationSettings) -> Optional[MCPServerConfig]:
+    """Create Velociraptor MCP server config from integration settings."""
+    if not settings.velociraptor_enabled:
+        return None
+
+    secrets = load_integration_secrets_from_env()
+
+    if not secrets.velociraptor_api_client_config_path:
+        logger.warning("velociraptor_enabled_but_config_path_missing")
+        return None
+
+    config_path = Path(secrets.velociraptor_api_client_config_path)
+    if not config_path.exists():
+        logger.warning(
+            "velociraptor_api_client_config_not_found",
+            path=str(config_path),
+        )
+        return None
+
+    base_path = Path(os.getenv("MCP_SERVERS_BASE_PATH", ".."))
+
+    return MCPServerConfig(
+        name="velociraptor",
+        path=Path(
+            os.getenv(
+                "VELOCIRAPTOR_MCP_SERVER_PATH",
+                str(base_path / "mcp" / "server_velociraptor.py"),
+            )
+        ),
+        env_vars={
+            "VELOCIRAPTOR_API_CLIENT_CONFIG": str(config_path),
+            "VELOCIRAPTOR_MAX_ROWS": str(settings.velociraptor_max_rows),
+        },
+    )
+
+
+def create_dfir_iris_mcp_config(settings: IntegrationSettings) -> Optional[MCPServerConfig]:
+    """Create DFIR-IRIS MCP server config from integration settings."""
+    if not settings.dfir_iris_enabled:
+        return None
+
+    secrets = load_integration_secrets_from_env()
+
+    if not settings.dfir_iris_url or not secrets.dfir_iris_api_key:
+        logger.warning(
+            "dfir_iris_enabled_but_missing_config",
+            url=bool(settings.dfir_iris_url),
+            api_key=bool(secrets.dfir_iris_api_key),
+        )
+        return None
+
+    base_path = Path(os.getenv("MCP_SERVERS_BASE_PATH", ".."))
+
+    return MCPServerConfig(
+        name="dfir_iris",
+        path=Path(
+            os.getenv(
+                "DFIR_IRIS_MCP_SERVER_PATH",
+                str(base_path / "mcp" / "server_dfir_iris.py"),
+            )
+        ),
+        env_vars={
+            "DFIR_IRIS_URL": settings.dfir_iris_url,
+            "DFIR_IRIS_API_KEY": secrets.dfir_iris_api_key,
+            "DFIR_IRIS_VERIFY_SSL": "true" if settings.dfir_iris_verify_ssl else "false",
+            "DFIR_IRIS_MAX_ROWS": str(settings.dfir_iris_max_rows),
+        },
+    )
+
+
 @dataclass
 class EnabledMCPServers:
     """Container for enabled MCP server configurations."""
@@ -309,30 +375,33 @@ class EnabledMCPServers:
     cortex: Optional[MCPServerConfig] = None
     thehive: Optional[MCPServerConfig] = None
     misp: Optional[MCPServerConfig] = None
+    velociraptor: Optional[MCPServerConfig] = None
+    dfir_iris: Optional[MCPServerConfig] = None
 
     @property
     def has_any_enabled(self) -> bool:
         """Check if any MCP server is enabled."""
-        return any([self.wazuh, self.cortex, self.thehive, self.misp])
+        return any([
+            self.wazuh, self.cortex, self.thehive, self.misp,
+            self.velociraptor, self.dfir_iris,
+        ])
 
     @property
     def enabled_count(self) -> int:
         """Count of enabled MCP servers."""
-        return sum(1 for s in [self.wazuh, self.cortex, self.thehive, self.misp] if s is not None)
+        return sum(1 for s in [
+            self.wazuh, self.cortex, self.thehive, self.misp,
+            self.velociraptor, self.dfir_iris,
+        ] if s is not None)
 
 
 def create_mcp_configs(settings: IntegrationSettings) -> EnabledMCPServers:
-    """Create MCP server configurations based on integration settings.
-
-    Args:
-        settings: Integration settings from database.
-
-    Returns:
-        EnabledMCPServers with configs for enabled integrations.
-    """
+    """Create MCP server configurations based on integration settings."""
     return EnabledMCPServers(
         wazuh=create_wazuh_mcp_config(settings),
         cortex=create_cortex_mcp_config(settings),
         thehive=create_thehive_mcp_config(settings),
         misp=create_misp_mcp_config(settings),
+        velociraptor=create_velociraptor_mcp_config(settings),
+        dfir_iris=create_dfir_iris_mcp_config(settings),
     )

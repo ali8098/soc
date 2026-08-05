@@ -22,9 +22,11 @@ logger = structlog.get_logger()
 # Global client instances
 _manager: Optional[MCPClientManager] = None
 _wazuh_client: Optional[MCPClient] = None
-_cortex_client: Optional[MCPClient] = None
+_cortex_client: Optional[MCPClient] = None 
 _thehive_client: Optional[MCPClient] = None
 _misp_client: Optional[MCPClient] = None
+_velociraptor_client: Optional[MCPClient] = None
+_dfir_iris_client: Optional[MCPClient] = None
 
 
 async def bind_clients(mcp_configs: Optional[EnabledMCPServers] = None) -> None:
@@ -40,6 +42,7 @@ async def bind_clients(mcp_configs: Optional[EnabledMCPServers] = None) -> None:
         Exception: If any client fails to connect.
     """
     global _manager, _wazuh_client, _cortex_client, _thehive_client, _misp_client
+    global _velociraptor_client, _dfir_iris_client
 
     logger.info("binding_mcp_clients")
 
@@ -62,6 +65,10 @@ async def bind_clients(mcp_configs: Optional[EnabledMCPServers] = None) -> None:
         connected.append("thehive")
     if _misp_client:
         connected.append("misp")
+    if _velociraptor_client:
+        connected.append("velociraptor")
+    if _dfir_iris_client:
+        connected.append("dfir_iris")
 
     logger.info(
         "mcp_clients_bound",
@@ -79,6 +86,7 @@ async def _bind_from_db_settings(mcp_configs: EnabledMCPServers) -> None:
         mcp_configs: MCP server configurations from database settings.
     """
     global _wazuh_client, _cortex_client, _thehive_client, _misp_client
+    global _velociraptor_client, _dfir_iris_client
 
     # Connect to Wazuh MCP server (if enabled)
     if mcp_configs.wazuh:
@@ -124,6 +132,33 @@ async def _bind_from_db_settings(mcp_configs: EnabledMCPServers) -> None:
     else:
         logger.info("misp_disabled_in_settings")
 
+    # Connect to Velociraptor MCP server (if enabled)
+    if mcp_configs.velociraptor:
+        logger.info("connecting_to_velociraptor", config="database_settings")
+        try:
+            _velociraptor_client = await _manager.add_client(mcp_configs.velociraptor)
+            logger.info(
+                "velociraptor_connected",
+                tools=_velociraptor_client.get_available_tools(),
+            )
+        except Exception as e:
+            logger.error("velociraptor_connection_failed", error=str(e))
+    else:
+        logger.info("velociraptor_disabled_in_settings")
+
+    # Connect to DFIR-IRIS MCP server (if enabled)
+    if mcp_configs.dfir_iris:
+        logger.info("connecting_to_dfir_iris", config="database_settings")
+        try:
+            _dfir_iris_client = await _manager.add_client(mcp_configs.dfir_iris)
+            logger.info(
+                "dfir_iris_connected", tools=_dfir_iris_client.get_available_tools()
+            )
+        except Exception as e:
+            logger.error("dfir_iris_connection_failed", error=str(e))
+    else:
+        logger.info("dfir_iris_disabled_in_settings")
+
 
 async def _bind_from_env_config() -> None:
     """Bind MCP clients based on environment configuration.
@@ -131,10 +166,18 @@ async def _bind_from_env_config() -> None:
     This is the legacy fallback when database is not available.
     """
     global _wazuh_client, _cortex_client, _thehive_client, _misp_client
+    global _velociraptor_client, _dfir_iris_client
 
     explicit_flags = any(
         os.getenv(name) is not None
-        for name in ["WAZUH_ENABLED", "CORTEX_ENABLED", "THEHIVE_ENABLED", "MISP_ENABLED"]
+        for name in [
+            "WAZUH_ENABLED",
+            "CORTEX_ENABLED",
+            "THEHIVE_ENABLED",
+            "MISP_ENABLED",
+            "VELOCIRAPTOR_ENABLED",
+            "DFIR_IRIS_ENABLED",
+        ]
     )
 
     if explicit_flags:
@@ -174,6 +217,7 @@ async def cleanup_clients() -> None:
     This should be called at application shutdown.
     """
     global _manager, _wazuh_client, _cortex_client, _thehive_client, _misp_client
+    global _velociraptor_client, _dfir_iris_client
 
     logger.info("cleaning_up_mcp_clients")
 
@@ -185,6 +229,8 @@ async def cleanup_clients() -> None:
     _cortex_client = None
     _thehive_client = None
     _misp_client = None
+    _velociraptor_client = None
+    _dfir_iris_client = None
 
     logger.info("mcp_clients_cleaned_up")
 
@@ -254,6 +300,34 @@ def is_misp_enabled() -> bool:
     return _misp_client is not None
 
 
+def get_velociraptor_client() -> Optional[MCPClient]:
+    """Get the Velociraptor MCP client.
+
+    Returns:
+        The Velociraptor MCPClient instance, or None if not connected.
+    """
+    return _velociraptor_client
+
+
+def get_dfir_iris_client() -> Optional[MCPClient]:
+    """Get the DFIR-IRIS MCP client.
+
+    Returns:
+        The DFIR-IRIS MCPClient instance, or None if not connected.
+    """
+    return _dfir_iris_client
+
+
+def is_velociraptor_enabled() -> bool:
+    """Check if Velociraptor integration is enabled and connected."""
+    return _velociraptor_client is not None
+
+
+def is_dfir_iris_enabled() -> bool:
+    """Check if DFIR-IRIS integration is enabled and connected."""
+    return _dfir_iris_client is not None
+
+
 def get_enabled_integrations() -> list[str]:
     """Get list of enabled integration names."""
     enabled = []
@@ -265,4 +339,8 @@ def get_enabled_integrations() -> list[str]:
         enabled.append("thehive")
     if _misp_client:
         enabled.append("misp")
+    if _velociraptor_client:
+        enabled.append("velociraptor")
+    if _dfir_iris_client:
+        enabled.append("dfir_iris")
     return enabled
