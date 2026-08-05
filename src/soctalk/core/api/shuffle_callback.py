@@ -129,7 +129,7 @@ async def shuffle_callback(
     # Verify investigation exists in this tenant
     row = await db.execute(
         text(
-            "SELECT id FROM investigations "
+            "SELECT id FROM cases "
             "WHERE id = :iid AND tenant_id = :tid LIMIT 1"
         ),
         {"iid": body.investigation_id, "tid": str(tenant_id)},
