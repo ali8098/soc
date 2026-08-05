@@ -36,16 +36,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 from typing import Any
 from uuid import UUID, uuid4
 
 import structlog
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from soctalk.core.tenancy.db import get_db
+from soctalk.core.tenancy.db import get_app_sessionmaker
 from soctalk.core.ir.policies import effective_policy
 
 logger = structlog.get_logger()
@@ -81,7 +81,6 @@ async def shuffle_callback(
     tenant_id: UUID,
     request: Request,
     x_soctalk_signature: str | None = Header(default=None, alias="X-SocTalk-Signature"),
-    db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Receive a Shuffle SOAR workflow result and record it as a note.
 
@@ -89,7 +88,6 @@ async def shuffle_callback(
         tenant_id: Tenant UUID from URL path.
         request:   Raw FastAPI request (needed to read raw body for sig check).
         x_soctalk_signature: Optional HMAC signature header.
-        db:        Async DB session (tenant-scoped via RLS).
 
     Returns:
         JSON with ok=True and note_id on success.
@@ -103,69 +101,69 @@ async def shuffle_callback(
 
     # Parse body
     try:
-        import json
         data = json.loads(raw_body)
         body = ShuffleCallbackBody(**data)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid body: {exc}") from exc
 
-    # Verify HMAC signature if secret is configured
-    policy = await effective_policy(db, tenant_id)
-    secret = str(policy.get("shuffle_webhook_secret") or "").strip()
-    if secret:
-        if not x_soctalk_signature:
-            raise HTTPException(
-                status_code=401,
-                detail="X-SocTalk-Signature header required",
-            )
-        if not _verify_signature(secret, raw_body, x_soctalk_signature):
-            logger.warning(
-                "shuffle_callback_signature_mismatch",
-                tenant_id=str(tenant_id),
-                execution_id=body.execution_id,
-            )
-            raise HTTPException(status_code=401, detail="Signature mismatch")
+    sm = get_app_sessionmaker()
+    async with sm() as db:
+        # Verify HMAC signature if secret is configured
+        policy = await effective_policy(db, tenant_id)
+        secret = str(policy.get("shuffle_webhook_secret") or "").strip()
+        if secret:
+            if not x_soctalk_signature:
+                raise HTTPException(
+                    status_code=401,
+                    detail="X-SocTalk-Signature header required",
+                )
+            if not _verify_signature(secret, raw_body, x_soctalk_signature):
+                logger.warning(
+                    "shuffle_callback_signature_mismatch",
+                    tenant_id=str(tenant_id),
+                    execution_id=body.execution_id,
+                )
+                raise HTTPException(status_code=401, detail="Signature mismatch")
 
-    # Verify investigation exists in this tenant
-    row = await db.execute(
-        text(
-            "SELECT id FROM cases "
-            "WHERE id = :iid AND tenant_id = :tid LIMIT 1"
-        ),
-        {"iid": body.investigation_id, "tid": str(tenant_id)},
-    )
-    if not row.fetchone():
-        raise HTTPException(
-            status_code=404,
-            detail=f"Investigation {body.investigation_id} not found in tenant",
+        # Verify investigation exists in this tenant
+        row = await db.execute(
+            text(
+                "SELECT id FROM cases "
+                "WHERE id = :iid AND tenant_id = :tid LIMIT 1"
+            ),
+            {"iid": body.investigation_id, "tid": str(tenant_id)},
         )
+        if not row.fetchone():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Investigation {body.investigation_id} not found in tenant",
+            )
 
-    # Build note body
-    import json as _json
-    result_snippet = _json.dumps(body.result, default=str)[:800]
-    note_body = (
-        f"[Shuffle callback] Workflow: {body.workflow_name}\n"
-        f"Execution ID: {body.execution_id}\n"
-        f"Status: {body.status}\n"
-        f"Result: {result_snippet}"
-    )[:_MAX_NOTE]
+        # Build note body
+        result_snippet = json.dumps(body.result, default=str)[:800]
+        note_body = (
+            f"[Shuffle callback] Workflow: {body.workflow_name}\n"
+            f"Execution ID: {body.execution_id}\n"
+            f"Status: {body.status}\n"
+            f"Result: {result_snippet}"
+        )[:_MAX_NOTE]
 
-    note_id = str(uuid4())
-    await db.execute(
-        text(
-            "INSERT INTO notes "
-            "(id, tenant_id, investigation_id, author_kind, author_id, body, visibility) "
-            "VALUES (:id, :tid, :iid, 'system', :author, :body, 'mssp_only')"
-        ),
-        {
-            "id": note_id,
-            "tid": str(tenant_id),
-            "iid": body.investigation_id,
-            "author": f"shuffle:{body.execution_id}",
-            "body": note_body,
-        },
-    )
-    await db.commit()
+        note_id = str(uuid4())
+        await db.execute(
+            text(
+                "INSERT INTO notes "
+                "(id, tenant_id, investigation_id, author_kind, author_id, body, visibility) "
+                "VALUES (:id, :tid, :iid, 'system', :author, :body, 'mssp_only')"
+            ),
+            {
+                "id": note_id,
+                "tid": str(tenant_id),
+                "iid": body.investigation_id,
+                "author": f"shuffle:{body.execution_id}",
+                "body": note_body,
+            },
+        )
+        await db.commit()
 
     logger.info(
         "shuffle_callback_recorded",

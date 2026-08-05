@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -100,7 +102,6 @@ async def _resolve_client_ids(client: Any, state: dict[str, Any]) -> list[str]:
             result = await client.call_tool(
                 "list_clients", {"hostname_filter": hostname, "limit": 1}
             )
-            import json
             rows = json.loads(result) if isinstance(result, str) else result
             if rows:
                 cid = rows[0].get("client_id")
@@ -123,8 +124,6 @@ async def _get_processes(client: Any, state: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Updated state with process findings.
     """
-    import json
-
     client_ids = await _resolve_client_ids(client, state)
     if not client_ids:
         logger.info("velociraptor_no_clients_for_processes")
@@ -189,8 +188,6 @@ async def _get_network_connections(client: Any, state: dict[str, Any]) -> dict[s
     Returns:
         Updated state with network connection findings.
     """
-    import json
-
     client_ids = await _resolve_client_ids(client, state)
     if not client_ids:
         logger.info("velociraptor_no_clients_for_netstat")
@@ -202,6 +199,7 @@ async def _get_network_connections(client: Any, state: dict[str, Any]) -> dict[s
 
     # Known-bad / suspicious ports (common C2 patterns)
     suspicious_ports = {4444, 1234, 31337, 8888, 9999, 5555, 6666, 7777}
+    private_prefixes = ("10.", "192.168.", "172.")
 
     for cid in client_ids:
         try:
@@ -212,13 +210,18 @@ async def _get_network_connections(client: Any, state: dict[str, Any]) -> dict[s
 
             metadata.setdefault("velociraptor_netstat", {})[cid] = rows
 
-            # Flag suspicious outbound connections
+            # Flag suspicious outbound connections:
+            # - known bad ports (C2 common ports), OR
+            # - established connections to non-RFC1918 (public) IPs
             suspicious = [
                 r for r in rows
-                if r.get("remote_port") in suspicious_ports
-                or r.get("remote_ip", "").startswith(("10.", "192.168.", "172."))
-                is False  # non-RFC1918 outbound
-                and r.get("Status") == "ESTABLISHED"
+                if (
+                    r.get("remote_port") in suspicious_ports
+                    or (
+                        not r.get("remote_ip", "").startswith(private_prefixes)
+                        and r.get("Status") == "ESTABLISHED"
+                    )
+                )
             ]
             if suspicious:
                 finding = Finding(
@@ -259,9 +262,6 @@ async def _get_hunt_results(
     Returns:
         Updated state with hunt results.
     """
-    import json
-    import re
-
     # Extract hunt_id from instructions e.g. "get hunt results H.ABC123"
     match = re.search(r"H\.[A-Za-z0-9]+", instructions)
     if not match:
