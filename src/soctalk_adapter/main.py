@@ -176,6 +176,163 @@ def _extract_iocs(text: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Wazuh normalization — _hit_to_event (used by tests + evals)
+# ---------------------------------------------------------------------------
+
+def _severity_from_rule_level(level: int | None) -> int:
+    if level is None:
+        return 0
+    return max(0, min(15, int(level)))
+
+
+_NAME_KV_RE = re.compile(r"\bname=([A-Za-z0-9_\-.]+)")
+_FIM_FILE_RE = re.compile(r"File '([^']+)' (?:was )?(?:modified|added|deleted|changed)", re.I)
+_USERID_KV_RE = re.compile(r"\b(?:USER|user|uid)=([A-Za-z0-9_\-.]+)")
+_IP_RE = re.compile(r"\b(?:from|src ip|source)\s*[=:]?\s*((?:\d{1,3}\.){3}\d{1,3})", re.I)
+
+
+def _extract_subject(full_log: str) -> str | None:
+    """Best-effort extraction of the alert's primary subject from
+    Wazuh's ``full_log`` line. Handles common useradd / groupadd / FIM
+    / authentication patterns. Returns ``None`` if no obvious subject
+    found — the title falls back to rule description only.
+    """
+    if not full_log:
+        return None
+    for rx in (_FIM_FILE_RE, _NAME_KV_RE, _USERID_KV_RE, _IP_RE):
+        m = rx.search(full_log)
+        if m:
+            return m.group(1)[:80]
+    return None
+
+
+def _compose_title(rule_desc: str, agent_name: str | None, subject: str | None) -> str:
+    """Compose an analyst-friendly title: ``{rule_desc}[: subject][ on agent]``."""
+    base = (rule_desc or "Wazuh alert").strip().rstrip(".")
+    if subject:
+        base = f"{base}: {subject}"
+    if agent_name:
+        base = f"{base} on {agent_name}"
+    return base[:255]
+
+
+def _extract_entities(src: dict, agent: dict, agent_name: str | None) -> list[dict]:
+    """Typed, role-carrying entities from fields the Wazuh decoder already parsed."""
+    ents: list[dict] = []
+
+    def add(t: str, v: Any, role: str | None, field: str) -> None:
+        if v is None:
+            return
+        s = str(v).strip()
+        if s:
+            ents.append({"type": t, "value": s[:512], "role": role, "source_field": field})
+
+    if isinstance(agent, dict) and agent.get("id"):
+        add("host", agent.get("name") or agent.get("id"), "target", "agent.name")
+    data = src.get("data") or {}
+    if isinstance(data, dict):
+        add("user", data.get("srcuser"), "actor", "data.srcuser")
+        add("user", data.get("dstuser"), "target", "data.dstuser")
+        add("user", data.get("user"), "actor", "data.user")
+        add("ip", data.get("srcip"), "src", "data.srcip")
+        add("ip", data.get("dstip"), "dst", "data.dstip")
+        add("port", data.get("srcport"), "src", "data.srcport")
+        add("port", data.get("dstport"), "dst", "data.dstport")
+        add("process", data.get("process") or data.get("command"), "actor", "data.process")
+    seen: set[tuple] = set()
+    out: list[dict] = []
+    for e in ents:
+        k = (e["type"], e["value"], e["role"])
+        if k not in seen:
+            seen.add(k)
+            out.append(e)
+    return out[:64]
+
+
+def _extract_mitre(rule: dict) -> dict:
+    """Pull MITRE ATT&CK refs from the rule."""
+    mitre = rule.get("mitre") or {}
+    if not isinstance(mitre, dict):
+        return {}
+
+    def _cap(v: Any) -> list[str]:
+        return [str(x)[:32] for x in (v or [])][:16]
+
+    out = {
+        "ids": _cap(mitre.get("id")),
+        "tactics": _cap(mitre.get("tactic")),
+        "techniques": _cap(mitre.get("technique")),
+    }
+    return out if any(out.values()) else {}
+
+
+def _hit_to_event(hit: dict) -> dict | None:
+    """Normalize a raw Wazuh Elasticsearch hit to SocTalk's source event shape.
+
+    Used by tests (test_nessus_replay_e2e) and evals (nessus_replay,
+    nessus_masking_test, nessus_triage_verdict). The Zeek/Suricata paths
+    use their own normalizers (_zeek_*_to_event, _suricata_eve_to_event).
+    """
+    src = hit.get("_source") or {}
+    source_id = src.get("id") or hit.get("_id")
+    if not source_id:
+        return None
+    rule = src.get("rule") or {}
+    agent = src.get("agent") or {}
+    full_log = src.get("full_log") or ""
+    rule_desc = rule.get("description") or ""
+    agent_name = agent.get("name") if isinstance(agent, dict) else None
+    asset_ids: list[str] = []
+    if isinstance(agent, dict) and agent.get("id"):
+        asset_ids.append(agent["id"][:64])
+    if agent_name:
+        asset_ids.append(agent_name[:64])
+
+    # IOC extraction reads the RAW text (must run before redaction).
+    iocs = _extract_iocs(f"{rule_desc} {full_log}")
+    entities = _extract_entities(src, agent, agent_name)
+
+    # Redact AFTER IOC extraction, BEFORE anything leaves the tenant.
+    full_log_red = redact_text(full_log)[:4096] if full_log else ""
+    rule_desc_red = redact_text(rule_desc)[:512] if rule_desc else ""
+    description = redact_text((full_log or rule_desc).strip())[:1024] or None
+    title = redact_text(
+        _compose_title(rule_desc, agent_name, _extract_subject(full_log))
+    )
+    thash = template_hash(full_log_red)
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return {
+        "source_event_id": str(source_id)[:128],
+        "source": "wazuh",
+        "rule_id": (str(rule.get("id"))[:64] if rule.get("id") else None),
+        "severity": _severity_from_rule_level(rule.get("level")),
+        "asset_ids": asset_ids[:8],
+        "initial_iocs": iocs,
+        "ts": src.get("@timestamp") or src.get("timestamp"),
+        "observed_at": now_iso,
+        "description": description,
+        "title": title,
+        "entities": entities,
+        "mitre": _extract_mitre(rule),
+        "rule_groups": [str(g)[:64] for g in (rule.get("groups") or [])][:16],
+        "decoder": (src.get("decoder") or {}).get("name"),
+        "full_log": full_log_red,
+        "template_hash": thash,
+        "template_version": TEMPLATE_VERSION,
+        "redaction_version": REDACTION_VERSION,
+        "raw": {
+            "rule_description": rule_desc_red,
+            "rule_groups": rule.get("groups") or [],
+            "decoder_name": (src.get("decoder") or {}).get("name"),
+            "location": src.get("location"),
+            "manager_name": (src.get("manager") or {}).get("name"),
+            "full_log": full_log_red,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Zeek normalization — JSON + TSV
 # ---------------------------------------------------------------------------
 
