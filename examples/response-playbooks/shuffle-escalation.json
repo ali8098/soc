@@ -1,0 +1,60 @@
+{
+  "id": "shuffle-escalation",
+  "version": 1,
+  "status": "shadow",
+  "description": "Trigger a Shuffle SOAR workflow on high-severity escalations. Shuffle can then isolate endpoints, create tickets, or notify on-call engineers automatically.",
+  "tenant": "*",
+  "applies_to": {
+    "rule_groups": [],
+    "mitre_techniques": [],
+    "min_severity": 10
+  },
+  "response": {
+    "on_escalate": [
+      {
+        "capability": "notify_shuffle",
+        "when": {">=": [{"var": "severity"}, 10]},
+        "params": {
+          "note": "High-severity alert escalated — Shuffle workflow triggered for automated response."
+        }
+      },
+      {
+        "capability": "annotate_investigation",
+        "params": {
+          "body": "Shuffle SOAR workflow triggered for automated response. Check Shuffle dashboard for execution status."
+        }
+      }
+    ],
+    "on_close": [
+      {
+        "capability": "annotate_investigation",
+        "params": {
+          "body": "Investigation auto-closed by triage policy. No Shuffle workflow triggered."
+        }
+      }
+    ]
+  },
+  "_comment": {
+    "setup": [
+      "1. In Shuffle: create a workflow with a Webhook trigger",
+      "2. Copy the webhook URL from Shuffle → Workflows → Triggers → Webhook",
+      "3. In SocTalk Settings → Integrations → Shuffle: paste the webhook URL",
+      "4. Optional: set shuffle_webhook_secret in tenant policy for HMAC verification",
+      "5. Change status from 'shadow' to 'active' when ready"
+    ],
+    "shuffle_callback": [
+      "Configure your Shuffle workflow to POST results back to SocTalk:",
+      "POST https://<your-soctalk>/api/internal/shuffle/callback/<tenant_id>",
+      "Body: {execution_id, investigation_id, workflow_name, status, result}",
+      "Header: X-SocTalk-Signature: sha256=<hmac> (if secret configured)"
+    ],
+    "what_shuffle_can_do": [
+      "Isolate endpoint via EDR integration",
+      "Create ticket in Jira/ServiceNow",
+      "Notify on-call via PagerDuty/OpsGenie",
+      "Block IP at firewall",
+      "Enrich IOCs via external APIs",
+      "Send Slack/Teams alert to security channel"
+    ]
+  }
+}
