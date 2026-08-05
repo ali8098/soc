@@ -105,15 +105,30 @@ async def list_clients(hostname_filter: str = "", limit: int = 50) -> str:
 
 @mcp.tool()
 async def client_processes(client_id: str, name_filter: str = "") -> str:
-    """Running processes on one Velociraptor client (pslist artifact). Use the client_id from list_clients."""
+    """Running processes on one Velociraptor client (cross-platform). Use the client_id from list_clients."""
+    # Detect OS first — pick the right artifact
+    os_rows = await _run_vql(
+        "SELECT os_info.system AS os FROM clients() WHERE client_id = client_id LIMIT 1",
+        {"client_id": client_id},
+    )
+    os_name = ""
+    if os_rows:
+        os_name = str(os_rows[0].get("os") or "").lower()
+
+    if "windows" in os_name:
+        artifact = "Artifact.Windows.System.Pslist"
+    elif "darwin" in os_name:
+        artifact = "Artifact.MacOS.System.Pslist"
+    else:
+        artifact = "Artifact.Linux.Sys.Pslist"
+
     rows = await _run_vql(
-        "SELECT Name, Pid, Ppid, CommandLine, Username "
-        "FROM Artifact.Windows.System.Pslist(client_id=client_id) "
-        "WHERE name_filter = '' OR Name =~ name_filter",
+        f"SELECT Name, Pid, Ppid, CommandLine, Username "
+        f"FROM {artifact}(client_id=client_id) "
+        f"WHERE name_filter = '' OR Name =~ name_filter",
         {"client_id": client_id, "name_filter": name_filter},
     )
     return json.dumps(rows[:_MAX_ROWS], default=str)
-
 
 @mcp.tool()
 async def hunt_results(hunt_id: str, limit: int = 100) -> str:
