@@ -20,7 +20,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -808,6 +808,7 @@ async def analytics_summary(
             "human_review": await _human_review(s, days),
             "outcomes": await _outcomes(s, days),
         }
+    raise HTTPException(503, "analytics session unavailable")
 
 
 @router.get("/api/analytics/kpis")
@@ -817,6 +818,7 @@ async def analytics_kpis(
     identity = current_identity(request)
     async for s in _analytics_session_for(identity):
         return await _kpis(s, days)
+    raise HTTPException(503, "analytics session unavailable")
 
 
 @router.get("/api/analytics/ai-behavior")
@@ -826,6 +828,7 @@ async def analytics_ai_behavior(
     identity = current_identity(request)
     async for s in _analytics_session_for(identity):
         return await _ai_behavior(s, days)
+    raise HTTPException(503, "analytics session unavailable")
 
 
 @router.get("/api/analytics/human-review")
@@ -835,6 +838,7 @@ async def analytics_human_review(
     identity = current_identity(request)
     async for s in _analytics_session_for(identity):
         return await _human_review(s, days)
+    raise HTTPException(503, "analytics session unavailable")
 
 
 @router.get("/api/analytics/outcomes")
@@ -844,6 +848,7 @@ async def analytics_outcomes(
     identity = current_identity(request)
     async for s in _analytics_session_for(identity):
         return await _outcomes(s, days)
+    raise HTTPException(503, "analytics session unavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -876,6 +881,7 @@ async def audit_event_types(request: Request) -> dict[str, list[str]]:
             await s.execute(_t("SELECT DISTINCT event_type FROM events ORDER BY event_type"))
         ).all()
         return {"event_types": [r[0] for r in rows]}
+    raise HTTPException(503, "audit session unavailable")
 
 
 @router.get("/api/audit")
@@ -954,6 +960,7 @@ async def audit_list(
             "page_size": page_size,
             "has_more": (offset + len(items)) < int(total or 0),
         }
+    raise HTTPException(503, "audit session unavailable")
 
 
 @router.get("/api/audit/stats")
@@ -1013,6 +1020,7 @@ async def audit_stats(
                 (r[0].isoformat() if r[0] else ""): int(r[1]) for r in by_hour
             },
         }
+    raise HTTPException(503, "audit session unavailable")
 
 
 @router.get("/api/audit/investigation/{investigation_id}")
@@ -1075,6 +1083,7 @@ async def audit_investigation(
             "events": events,
             "total_events": len(events),
         }
+    raise HTTPException(503, "audit session unavailable")
 
 
 # ---------------------------------------------------------------------------
@@ -1224,6 +1233,7 @@ async def settings_get(request: Request) -> dict[str, Any]:
                 )
             ).mappings().first()
         return _settings_row_to_dict(row, tid)
+    raise HTTPException(503, "settings session unavailable")
 
 
 class _SettingsSaveBody(BaseModel):
@@ -1289,6 +1299,7 @@ async def settings_put(body: _SettingsSaveBody, request: Request) -> dict[str, A
                 raise HTTPException(404, "settings not found for tenant")
             d = _settings_row_to_dict(row, tid)
             return {"success": True, "updated_at": d["updated_at"]}
+        raise HTTPException(503, "settings session unavailable")
 
     if "dfir_iris_api_key" in payload:
         payload["dfir_iris_api_key_plain"] = payload.pop("dfir_iris_api_key")
@@ -1324,6 +1335,7 @@ async def settings_put(body: _SettingsSaveBody, request: Request) -> dict[str, A
         ).mappings().first()
         d = _settings_row_to_dict(row, tid)
         return {"success": True, "updated_at": d["updated_at"]}
+    raise HTTPException(503, "settings session unavailable")
 
 
 __all__ = ["router"]
