@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, TypedDict
 
 import structlog
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from soctalk.graph.close import close_investigation_node
 from soctalk.graph.hil import human_review_node
@@ -35,7 +36,36 @@ from soctalk.workers.wazuh import wazuh_worker_node
 logger = structlog.get_logger()
 
 
-def route_from_resolve_triage_policy(state: dict[str, Any]) -> Literal[
+class AgentState(TypedDict, total=False):
+    """LangGraph state schema for the SecOps triage pipeline.
+
+    All fields are optional (total=False) because nodes write selectively;
+    state accumulates as the graph runs.
+    """
+
+    investigation: dict[str, Any]
+    triage_policy: dict[str, Any]
+    playbook: dict[str, Any]
+    supervisor_decision: dict[str, Any]
+    supervisor_error: dict[str, Any]
+    verdict: dict[str, Any]
+    verdict_error: dict[str, Any]
+    verdict_interrupted: bool
+    verdict_retry_count: int
+    human_decision: str
+    iteration_count: int
+    budget_terminated: bool
+    operational_vetoes: list[str]
+    # Workers write arbitrary enrichment data under their own keys
+    wazuh_data: dict[str, Any]
+    cortex_data: dict[str, Any]
+    misp_data: dict[str, Any]
+    thehive_data: dict[str, Any]
+    dfir_iris_data: dict[str, Any]
+    velociraptor_data: dict[str, Any]
+
+
+def route_from_resolve_triage_policy(state: AgentState) -> Literal[
     "operational_close",
     "supervisor",
 ]:
@@ -78,10 +108,14 @@ def route_from_resolve_triage_policy(state: dict[str, Any]) -> Literal[
     return "operational_close"
 
 
-def route_from_supervisor(state: dict[str, Any]) -> Literal[
+def route_from_supervisor(
+    state: AgentState,
+) -> Literal[
     "wazuh_worker",
     "cortex_worker",
     "misp_worker",
+    "dfir_iris_worker",
+    "velociraptor_worker",
     "gather_authorization_context",
     "verdict",
     "close_investigation",
@@ -121,7 +155,7 @@ def route_from_supervisor(state: dict[str, Any]) -> Literal[
         action == "VERDICT" and state.get("iteration_count", 0) >= MAX_ITERATIONS
     )
     if not state.get("budget_terminated") and not forced_verdict:
-        legal = legal_actions_for(state)
+        legal = legal_actions_for(dict(state))
         if legal is not None and action not in legal:
             fallback = "VERDICT" if "VERDICT" in legal else sorted(legal)[0]
             logger.warning(
@@ -158,7 +192,7 @@ def route_from_supervisor(state: dict[str, Any]) -> Literal[
         # extra supervisor pass after the step would burn more (the worker
         # reports it halted_budget/leave_open, never close_fp).
         if not state.get("budget_terminated"):
-            missing = missing_required_steps(state)
+            missing = missing_required_steps(dict(state))
             if missing:
                 logger.info(
                     "pre_decision_gate_reroute",
@@ -168,14 +202,14 @@ def route_from_supervisor(state: dict[str, Any]) -> Literal[
                     action=action,
                     step=missing[0],
                 )
-                return GATHER_AUTHORIZATION_CONTEXT
+                return "gather_authorization_context"
         return "verdict" if action == "VERDICT" else "close_investigation"
     else:
         # Default to enrichment
         return "cortex_worker"
 
 
-def route_from_verdict(state: dict[str, Any]) -> Literal[
+def route_from_verdict(state: AgentState) -> Literal[
     "human_review",
     "close_investigation",
     "supervisor",
@@ -240,7 +274,7 @@ def route_from_verdict(state: dict[str, Any]) -> Literal[
         return "human_review"
 
 
-def route_from_human_review(state: dict[str, Any]) -> Literal[
+def route_from_human_review(state: AgentState) -> Literal[
     "thehive_worker",
     "close_investigation",
     "supervisor",
@@ -269,8 +303,8 @@ def route_from_human_review(state: dict[str, Any]) -> Literal[
 
 
 def build_secops_graph(
-    checkpointer: BaseCheckpointSaver | None = None,
-) -> StateGraph:
+    checkpointer: "BaseCheckpointSaver[Any] | None" = None,
+) -> "CompiledStateGraph[AgentState, Any, AgentState, AgentState]":
     """Build the SecOps LangGraph.
 
     Args:
@@ -309,25 +343,31 @@ def build_secops_graph(
     """
     logger.info("building_secops_graph", checkpointer_enabled=checkpointer is not None)
 
-    # Create graph with dict state
-    graph = StateGraph(dict)
+    # Create graph with typed state schema
+    graph = StateGraph(AgentState)
 
-    # Add nodes
-    graph.add_node("resolve_triage_policy", resolve_triage_policy_node)
-    graph.add_node("operational_close", operational_close_node)
-    graph.add_node("supervisor", supervisor_node)
-    graph.add_node("wazuh_worker", wazuh_worker_node)
-    graph.add_node("dfir_iris_worker", dfir_iris_worker_node)
-    graph.add_node("velociraptor_worker", velociraptor_worker_node)
+    # Add nodes.  Node callables are typed as dict[str, Any] → dict[str, Any];
+    # AgentState is a TypedDict (structural subtype of dict) so assignment is
+    # safe at runtime.  We cast `graph` to Any here only for the add_node
+    # calls to silence the mypy NodeInputT bound, then work with the typed
+    # graph elsewhere.
+    from typing import cast as _cast
 
-    graph.add_node("cortex_worker", cortex_worker_node)
-    graph.add_node("misp_worker", misp_worker_node)
-    graph.add_node(GATHER_AUTHORIZATION_CONTEXT, gather_authorization_context_node)
-    graph.add_node("verdict", verdict_node)
-    graph.add_node("verdict_guard", verdict_guard_node)
-    graph.add_node("human_review", human_review_node)
-    graph.add_node("thehive_worker", thehive_worker_node)
-    graph.add_node("close_investigation", close_investigation_node)
+    _g: Any = graph
+    _g.add_node("resolve_triage_policy", resolve_triage_policy_node)
+    _g.add_node("operational_close", operational_close_node)
+    _g.add_node("supervisor", supervisor_node)
+    _g.add_node("wazuh_worker", wazuh_worker_node)
+    _g.add_node("dfir_iris_worker", dfir_iris_worker_node)
+    _g.add_node("velociraptor_worker", velociraptor_worker_node)
+    _g.add_node("cortex_worker", cortex_worker_node)
+    _g.add_node("misp_worker", misp_worker_node)
+    _g.add_node(GATHER_AUTHORIZATION_CONTEXT, gather_authorization_context_node)
+    _g.add_node("verdict", verdict_node)
+    _g.add_node("verdict_guard", verdict_guard_node)
+    _g.add_node("human_review", human_review_node)
+    _g.add_node("thehive_worker", thehive_worker_node)
+    _g.add_node("close_investigation", close_investigation_node)
 
     # Set entry point: deterministic triage policy resolution before the first LLM look.
     # An operational-class alert with no security indicators closes without ever
