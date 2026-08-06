@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-from pathlib import Path
 from typing import Any, Optional
 
 import structlog
@@ -50,8 +49,9 @@ class MCPClient:
         self._session: Optional[ClientSession] = None
         self._tools: dict[str, dict[str, Any]] = {}
         self._connected = False
-        self._stdio_context = None
-        self._session_context = None
+        # Store context managers with proper types so __aexit__ is reachable.
+        self._stdio_context: Any = None
+        self._session_context: Any = None
         # A single stdio ClientSession multiplexes one request/response stream
         # and cannot be shared by concurrent callers: interleaved call_tool()
         # coroutines corrupt the stream. The runs-worker now executes
@@ -108,11 +108,12 @@ class MCPClient:
                 env=env,
             )
 
-            # Start the stdio client as context manager
+            # stdio_client returns an _AsyncGeneratorContextManager directly —
+            # it can be used with __aenter__/__aexit__ without extra wrapping.
             self._stdio_context = stdio_client(server_params)
             read_stream, write_stream = await self._stdio_context.__aenter__()
 
-            # Create and enter client session context manager
+            # ClientSession implements __aenter__/__aexit__ natively.
             self._session_context = ClientSession(read_stream, write_stream)
             self._session = await self._session_context.__aenter__()
 
@@ -170,7 +171,8 @@ class MCPClient:
             self._tools[tool.name] = {
                 "name": tool.name,
                 "description": tool.description,
-                "inputSchema": tool.inputSchema,
+                # MCP SDK >= 1.x uses snake_case attribute names.
+                "inputSchema": tool.input_schema,
             }
             logger.debug("mcp_tool_discovered", server=self.name, tool=tool.name)
 
@@ -193,7 +195,7 @@ class MCPClient:
         """
         return self._tools.get(tool_name)
 
-    async def call_tool(self, tool_name: str, arguments: Optional[dict] = None) -> Any:
+    async def call_tool(self, tool_name: str, arguments: Optional[dict[str, Any]] = None) -> Any:
         """Call a tool on the MCP server.
 
         Args:
@@ -227,8 +229,8 @@ class MCPClient:
             async with self._call_lock:
                 result = await self._session.call_tool(tool_name, arguments or {})
 
-            # Check for errors
-            if result.isError:
+            # MCP SDK >= 1.x uses snake_case: is_error (not isError).
+            if result.is_error:
                 error_text = self._extract_text_content(result.content)
                 raise MCPToolError(f"Tool {tool_name} failed: {error_text}")
 
@@ -249,7 +251,7 @@ class MCPClient:
         except Exception as e:
             raise MCPToolError(f"Error calling {tool_name} on {self.name}: {e}") from e
 
-    def _extract_text_content(self, content: list) -> str:
+    def _extract_text_content(self, content: list[Any]) -> str:
         """Extract text from MCP content array.
 
         Args:
@@ -273,7 +275,7 @@ class MCPClientManager:
     Handles lifecycle of all MCP server connections.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the client manager."""
         self._clients: dict[str, MCPClient] = {}
 
